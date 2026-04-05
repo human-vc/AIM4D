@@ -204,6 +204,23 @@ def extract_factors(min_year=MIN_YEAR, k_max=K_MAX):
 
     result = poet_estimate(X, K)
 
+    sign_ref = {
+        0: "v2x_polyarchy",
+        1: "v2x_corr",
+        2: "v2x_suffr",
+        3: "v2xdd_dd",
+    }
+    expected_sign = {0: +1, 1: -1, 2: +1, 3: +1}
+    for k in range(K):
+        ref = sign_ref.get(k)
+        if ref and ref in indicators:
+            idx = indicators.index(ref)
+            actual = np.sign(result["loadings"][idx, k])
+            desired = expected_sign.get(k, +1)
+            if actual != desired:
+                result["loadings"][:, k] *= -1
+                result["factors"][:, k] *= -1
+
     var_explained = result["eigenvalues"] / np.trace(X.T @ X / X.shape[0])
     cumulative = np.cumsum(var_explained)
     print(f"Variance explained: {np.round(var_explained * 100, 1)}%")

@@ -16,3 +16,7 @@ gdelt>=2.0
 comtradeapicall>=1.0
 tqdm
 plotly
+pycountry>=24.6
+wbgapi>=1.0
+hmmlearn>=0.3
+ewstools>=2.1

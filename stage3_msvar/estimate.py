@@ -509,6 +509,7 @@ def run_stage3():
             scaler = StandardScaler()
             macro_sub[selected_covs] = scaler.fit_transform(macro_sub[selected_covs])
 
+            macro_sub = macro_sub.drop_duplicates(subset=["iso3", "year"])
             macro_lookup = macro_sub.set_index(["iso3", "year"])[selected_covs]
 
             Z_seqs = []

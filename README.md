@@ -1,8 +1,6 @@
 # AIM4D
 
-Five-stage econometric-causal framework for forecasting democratic decline. Accepted to the [AIM4D Conference](https://sites.nd.edu/aim3d/knowledge-network/aim4d-conference/) at Notre Dame (October 2026).
-
-**Authors:** Brandon Yee, Jacob Crainic, Krishna Sharma
+Five-stage econometric-causal framework for forecasting democratic decline.
 
 ## Pipeline
 
@@ -13,14 +11,6 @@ Five-stage econometric-causal framework for forecasting democratic decline. Acce
 | 3 | 5-state Gaussian HMM with AR(1) lags + TVTP (LASSO-selected GDELT/macro covariates) | Regime state probabilities and transition dynamics |
 | 4 | INE-TARNet on spatio-temporal graph (contiguity + alliance + trade networks) | Per-factor contagion scores, domestic vs. network decomposition |
 | 5 | Critical slowing down (variance, AR1, kurtosis) on NSCM domestic residuals | Continuous CSD risk index, early warning signals |
-
-## Key Results
-
-- **Stage 1:** 4 factors, 55% cumulative variance, Denmark at top, North Korea at bottom
-- **Stage 2:** Hungary betas peak 2018, Poland reverses 2023, Turkey steadily declining
-- **Stage 3:** Weighted kappa 0.67 vs V-Dem RoW, GDELT Goldstein scale + repression count drive transitions
-- **Stage 4:** Network ablation shows 26.3% MSE improvement from spatial features, Hungary 70% contagion
-- **Stage 5:** AUC-ROC 0.74, 62% sensitivity on 8 known episodes, 3.2x lift over random
 
 ## Data
 
@@ -69,7 +59,3 @@ AIM4D/
   stage5_ews/               # Early warning signals
   requirements.txt
 ```
-
-## Citation
-
-Yee, B., Crainic, J., & Sharma, K. (2026). Democratic Factor Betas, Network Contagion, and Early Warning: A Five-Stage Econometric-Causal Framework for Forecasting Democratic Decline. Presented at AIM4D, University of Notre Dame.

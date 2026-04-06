@@ -322,8 +322,6 @@ def run_ews():
         (ews_df["election_vulnerability"] > ev_high) |
         ((ews_df["party_threat"] > 4.5) & (ews_df["election_within_2yr"] > 0) & (ews_df["csd_index"] > 1.0))
     )
-    ews_df["combined_alert"] = ews_df["ews_alert"] | ews_df["election_alert"]
-
     n_elec_alerts = ews_df["election_alert"].sum()
     print(f"  Election alerts: {n_elec_alerts}")
 
@@ -336,6 +334,66 @@ def run_ews():
         else:
             peak_ev = sub["election_vulnerability"].max()
             print(f"  {country}: no election alert (max vuln={peak_ev:.2f})")
+
+    print(f"\n{'='*60}")
+    print(f"Democratic vulnerability module (high-polyarchy sensitivity)")
+    print(f"{'='*60}\n")
+
+    factors = pd.read_csv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "..", "stage1_factors", "country_year_factors.csv"))
+    factors["f1_change"] = factors.groupby("country_text_id")["factor_1"].diff()
+    factors["f1_rolling_mean"] = factors.groupby("country_text_id")["factor_1"].transform(
+        lambda x: x.rolling(5, min_periods=3).mean()
+    )
+    ews_df = ews_df.merge(factors[["country_text_id", "year", "factor_1", "f1_change", "f1_rolling_mean"]],
+                           on=["country_text_id", "year"], how="left")
+
+    high_dem = ews_df["f1_rolling_mean"] > ews_df["f1_rolling_mean"].quantile(0.75)
+    declining = ews_df["f1_change"] < -0.02
+    any_csd = ews_df["csd_index"] > 0.5
+    ews_df["dem_vulnerability_alert"] = high_dem & declining & any_csd
+    n_dv = ews_df["dem_vulnerability_alert"].sum()
+    print(f"  Democratic vulnerability alerts: {n_dv}")
+
+    for country in ["Hungary", "United States of America", "Denmark"]:
+        sub = ews_df[(ews_df["country_name"] == country) & ews_df["dem_vulnerability_alert"]]
+        if len(sub) > 0:
+            print(f"  {country}: alerts in {sorted(sub['year'].tolist())[:5]}")
+        else:
+            print(f"  {country}: no democratic vulnerability alert")
+
+    print(f"\n{'='*60}")
+    print(f"Military threat module")
+    print(f"{'='*60}\n")
+
+    macro = pd.read_csv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "..", "data", "macro_covariates.csv"))
+    macro["mil_growth"] = macro.groupby("iso3")["military_spending"].pct_change()
+    macro["mil_mean"] = macro.groupby("iso3")["military_spending"].transform(
+        lambda x: x.rolling(10, min_periods=5).mean()
+    )
+    macro["mil_std"] = macro.groupby("iso3")["military_spending"].transform(
+        lambda x: x.rolling(10, min_periods=5).std()
+    )
+    macro["mil_zscore"] = (macro["military_spending"] - macro["mil_mean"]) / macro["mil_std"].clip(lower=0.01)
+    ews_df = ews_df.merge(macro[["iso3", "year", "mil_zscore", "mil_growth"]].rename(columns={"iso3": "country_text_id"}),
+                           on=["country_text_id", "year"], how="left")
+    ews_df["mil_zscore"] = ews_df["mil_zscore"].fillna(0)
+    ews_df["mil_growth"] = ews_df["mil_growth"].fillna(0)
+
+    ews_df["military_threat_alert"] = (ews_df["mil_zscore"] > 1.5) & (ews_df["csd_index"] > 1.0)
+    n_mil = ews_df["military_threat_alert"].sum()
+    print(f"  Military threat alerts: {n_mil}")
+
+    for country in ["Thailand", "Egypt", "Burma/Myanmar", "Mali"]:
+        sub = ews_df[(ews_df["country_name"] == country) & ews_df["military_threat_alert"]]
+        if len(sub) > 0:
+            print(f"  {country}: alerts in {sorted(sub['year'].tolist())[:5]}")
+        else:
+            print(f"  {country}: no military threat alert")
+
+    ews_df["combined_alert"] = ews_df["ews_alert"] | ews_df["election_alert"] | ews_df["dem_vulnerability_alert"] | ews_df["military_threat_alert"]
+    ews_df["combined_risk"] = ews_df["csd_index"] + ews_df["election_vulnerability"] * 0.5
 
     print(f"\n{'='*60}")
     print(f"Validation (CSD + election combined)")

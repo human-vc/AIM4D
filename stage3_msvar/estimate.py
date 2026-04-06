@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 FACTOR_COLS = ["factor_1", "factor_2", "factor_3", "factor_4"]
 N_STATES = 5
-N_RESTARTS = 20
+N_RESTARTS = 60
 DIRICHLET_DIAG = 50
 DIRICHLET_OFF = 2
 MIN_F1_MARGIN = 0.15

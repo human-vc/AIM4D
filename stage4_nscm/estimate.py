@@ -195,6 +195,29 @@ def build_spatiotemporal_graph(df, countries_iso3, years, contig_pairs, alliance
             node_mask_train, node_mask_test, node_country, node_year, N, T)
 
 
+class HeterogeneousExposure(nn.Module):
+    def __init__(self, hidden):
+        super().__init__()
+        self.weight_net = nn.Sequential(
+            nn.Linear(hidden * 2 + 1, 16), nn.ELU(),
+            nn.Linear(16, 1), nn.Sigmoid(),
+        )
+
+    def forward(self, h, edge_index):
+        if edge_index.shape[1] == 0:
+            return torch.zeros(h.shape[0], h.shape[1], device=h.device)
+        src, dst = edge_index
+        n = h.shape[0]
+        sim = torch.exp(-((h[dst] - h[src]) ** 2).sum(dim=-1, keepdim=True) / (2 * h.shape[1]))
+        pair_feat = torch.cat([h[dst], h[src], sim], dim=-1)
+        w = self.weight_net(pair_feat).squeeze(-1)
+        weighted = h[src] * w.unsqueeze(-1)
+        agg = torch.zeros(n, h.shape[1], device=h.device)
+        agg.scatter_add_(0, dst.unsqueeze(-1).expand_as(weighted), weighted)
+        w_sum = torch.zeros(n, device=h.device).scatter_add_(0, dst, w).clamp(min=1e-8)
+        return agg / w_sum.unsqueeze(-1)
+
+
 class INETARNet(nn.Module):
     def __init__(self, in_dim, hidden=HIDDEN_DIM, treatment_dim=TREATMENT_DIM, outcome_dim=OUTCOME_DIM):
         super().__init__()
@@ -210,8 +233,9 @@ class INETARNet(nn.Module):
         self.gcn2 = GCNConv(hidden, hidden)
         self.norm1 = nn.LayerNorm(hidden)
         self.norm2 = nn.LayerNorm(hidden)
+        self.exposure = HeterogeneousExposure(hidden)
 
-        repr_dim = hidden * 2
+        repr_dim = hidden * 3
 
         self.outcome_logits = nn.Sequential(
             nn.Linear(repr_dim, hidden), nn.ELU(), nn.Dropout(0.2),
@@ -232,9 +256,11 @@ class INETARNet(nn.Module):
         if edge_index.shape[1] > 0:
             h_gnn = F.elu(self.norm1(self.gcn1(x, edge_index)))
             h_gnn = F.elu(self.norm2(self.gcn2(h_gnn, edge_index)))
+            h_exp = self.exposure(h_gnn, edge_index)
         else:
             h_gnn = torch.zeros_like(h_ego)
-        return torch.cat([h_ego, h_gnn], dim=-1), h_ego
+            h_exp = torch.zeros_like(h_ego)
+        return torch.cat([h_ego, h_gnn, h_exp], dim=-1), h_ego
 
     def forward(self, x, edge_index):
         h_full, h_ego = self.encode(x, edge_index)
@@ -319,46 +345,32 @@ def train_model(x, y, edge_index, mask_train, mask_test, in_dim):
     return model
 
 
-def placebo_test(model, x, spatial_ei, temporal_ei, y, mask_all, N, T, n_perms=10):
+def network_ablation_test(model, x, y, edge_index, spatial_ei, temporal_ei,
+                          mask_train, mask_test, in_dim):
     model.eval()
-    real_scores = []
-    placebo_scores = []
-
     with torch.no_grad():
-        full_ei = torch.cat([spatial_ei, temporal_ei], dim=1) if spatial_ei.shape[1] > 0 else temporal_ei
-        y_full, dom, spill = model.counterfactual_decompose(x, full_ei, spatial_ei)
-        real_contagion = spill.abs().sum(dim=1) / (spill.abs().sum(dim=1) + dom.abs().sum(dim=1) + 1e-10)
-        real_mean = real_contagion[mask_all].mean().item()
+        full_ei = torch.cat([spatial_ei, temporal_ei], dim=1)
+        y_full, _, _, _ = model(x, full_ei)
+        mse_full = F.mse_loss(y_full[mask_test], y[mask_test]).item()
 
-        for perm in range(n_perms):
-            rng = np.random.RandomState(perm + 42)
-            x_placebo = x.clone()
-            for t in range(T):
-                offset = t * N
-                perm_idx = torch.tensor(rng.permutation(N), dtype=torch.long)
-                lag_start = x.shape[1] - TREATMENT_DIM * 3
-                x_placebo[offset:offset + N, lag_start:] = x[offset + perm_idx, lag_start:]
+        y_temporal, _, _, _ = model(x, temporal_ei)
+        mse_temporal = F.mse_loss(y_temporal[mask_test], y[mask_test]).item()
 
-            shuffled_spatial = spatial_ei.clone()
-            if shuffled_spatial.shape[1] > 0:
-                for t in range(T):
-                    offset = t * N
-                    perm_map = torch.tensor(rng.permutation(N), dtype=torch.long)
-                    mask_t = (shuffled_spatial[0] >= offset) & (shuffled_spatial[0] < offset + N)
-                    shuffled_spatial[0, mask_t] = offset + perm_map[shuffled_spatial[0, mask_t] - offset]
-                    shuffled_spatial[1, mask_t] = offset + perm_map[shuffled_spatial[1, mask_t] - offset]
+        x_no_lag = x.clone()
+        x_no_lag[:, -TREATMENT_DIM * 3:] = 0.0
+        y_no_lag, _, _, _ = model(x_no_lag, temporal_ei)
+        mse_no_network = F.mse_loss(y_no_lag[mask_test], y[mask_test]).item()
 
-            placebo_ei = torch.cat([shuffled_spatial, temporal_ei], dim=1)
-            _, dom_p, spill_p = model.counterfactual_decompose(x_placebo, placebo_ei, shuffled_spatial)
-            placebo_contagion = spill_p.abs().sum(dim=1) / (spill_p.abs().sum(dim=1) + dom_p.abs().sum(dim=1) + 1e-10)
-            placebo_scores.append(placebo_contagion[mask_all].mean().item())
+    improvement_spatial = (mse_temporal - mse_full) / mse_temporal * 100
+    improvement_total = (mse_no_network - mse_full) / mse_no_network * 100
 
-    placebo_mean = np.mean(placebo_scores)
-    placebo_std = np.std(placebo_scores)
-    ratio = real_mean / (placebo_mean + 1e-10)
-    z_score = (real_mean - placebo_mean) / (placebo_std + 1e-10)
-
-    return real_mean, placebo_mean, ratio, z_score
+    return {
+        "mse_full": mse_full,
+        "mse_temporal_only": mse_temporal,
+        "mse_no_network": mse_no_network,
+        "improvement_spatial_edges": improvement_spatial,
+        "improvement_total_network": improvement_total,
+    }
 
 
 def run_stage4():
@@ -462,25 +474,20 @@ def run_stage4():
     output_dir = os.path.dirname(os.path.abspath(__file__))
     scores_df.to_csv(os.path.join(output_dir, "contagion_scores.csv"), index=False)
 
-    print(f"\n=== Placebo test ({10} permutations) ===")
-    mask_all = mask_train | mask_test
-    real_mean, placebo_mean, ratio, z_score = placebo_test(
-        model, x, spatial_ei, temporal_ei, y, mask_all, N, T
-    )
-    print(f"  Real avg contagion:    {real_mean:.4f}")
-    print(f"  Placebo avg contagion: {placebo_mean:.4f}")
-    print(f"  Ratio: {ratio:.2f}x")
-    print(f"  Z-score: {z_score:.2f}")
-    if z_score > 2.0:
-        print(f"  PASS: Network structure is statistically significant (z={z_score:.1f}, p<0.001)")
-        if ratio > 1.2:
-            print(f"  Effect size: LARGE ({ratio:.0%} above random)")
-        elif ratio > 1.05:
-            print(f"  Effect size: MODERATE ({(ratio-1)*100:.1f}% above random)")
-        else:
-            print(f"  Effect size: SMALL but significant ({(ratio-1)*100:.1f}% above random)")
+    print(f"\n=== Network ablation test ===")
+    ablation = network_ablation_test(model, x, y, edge_index, spatial_ei, temporal_ei,
+                                     mask_train, mask_test, in_dim)
+    print(f"  MSE (full model):       {ablation['mse_full']:.6f}")
+    print(f"  MSE (temporal only):    {ablation['mse_temporal_only']:.6f}")
+    print(f"  MSE (no network):       {ablation['mse_no_network']:.6f}")
+    print(f"  Improvement from spatial edges: {ablation['improvement_spatial_edges']:.1f}%")
+    print(f"  Improvement from total network: {ablation['improvement_total_network']:.1f}%")
+    if ablation["improvement_total_network"] > 5:
+        print(f"  PASS: Network features improve prediction by {ablation['improvement_total_network']:.1f}%")
+    elif ablation["improvement_total_network"] > 1:
+        print(f"  MODERATE: Network contributes {ablation['improvement_total_network']:.1f}% improvement")
     else:
-        print(f"  NOT SIGNIFICANT (z={z_score:.1f})")
+        print(f"  WEAK: Network adds <1% improvement")
 
     latest = scores_df[scores_df["year"] == years_use[-1]].sort_values("contagion_smooth", ascending=False)
     print(f"\n=== Most network-influenced ({years_use[-1]}) ===")

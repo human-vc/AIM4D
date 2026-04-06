@@ -34,36 +34,35 @@ def load_residuals():
     scores_path = os.path.join(base, "..", "stage4_nscm", "contagion_scores.csv")
     factors_path = os.path.join(base, "..", "stage1_factors", "country_year_factors.csv")
 
+    scores = pd.read_csv(scores_path)
+    factors = pd.read_csv(factors_path)
+    merged = factors.merge(
+        scores[["country_text_id", "year", "contagion_score", "domestic_score"]],
+        on=["country_text_id", "year"], how="inner"
+    )
+
+    factor_cols = ["factor_1", "factor_2", "factor_3", "factor_4"]
+    for k, fc in enumerate(factor_cols):
+        merged[f"resid_factor_{k+1}"] = merged.groupby("country_text_id")[fc].diff() * merged["domestic_score"]
+
     if os.path.exists(resid_path):
         resid = pd.read_csv(resid_path)
-        scores = pd.read_csv(scores_path)
-        factors = pd.read_csv(factors_path)
-
-        merged = factors[["country_name", "country_text_id", "year"]].merge(
-            resid, on=["country_text_id", "year"], how="inner"
-        ).merge(
-            scores[["country_text_id", "year", "contagion_score", "domestic_score"]],
-            on=["country_text_id", "year"], how="inner"
-        )
-
+        merged = merged.merge(resid, on=["country_text_id", "year"], how="left")
         dom_cols = [c for c in resid.columns if c.startswith("nscm_resid_domestic_")]
         for k, dc in enumerate(dom_cols):
-            merged[f"resid_{k+1}"] = merged[dc]
-        print(f"Loaded NSCM domestic residuals ({len(dom_cols)} dimensions)")
+            merged[f"resid_nscm_{k+1}"] = merged[dc]
+        n_nscm = len(dom_cols)
+        print(f"Loaded dual residuals: {len(factor_cols)} factor-based + {n_nscm} NSCM")
     else:
-        print("NSCM residuals not found, falling back to factor-based")
-        scores = pd.read_csv(scores_path)
-        factors = pd.read_csv(factors_path)
-        merged = factors.merge(
-            scores[["country_text_id", "year", "contagion_score", "domestic_score"]],
-            on=["country_text_id", "year"], how="inner"
-        )
-        factor_cols = ["factor_1", "factor_2", "factor_3", "factor_4"]
-        for k, fc in enumerate(factor_cols):
-            merged[f"resid_{k+1}"] = merged.groupby("country_text_id")[fc].diff() * merged["domestic_score"]
+        n_nscm = 0
+        print(f"Factor-based residuals only ({len(factor_cols)} dimensions)")
 
-    merged = merged.dropna(subset=[f"resid_{k+1}" for k in range(min(4, len([c for c in merged.columns if c.startswith("resid_")])))])
-    return merged
+    all_resid_cols = [f"resid_factor_{k+1}" for k in range(4)]
+    if n_nscm > 0:
+        all_resid_cols += [f"resid_nscm_{k+1}" for k in range(n_nscm)]
+
+    merged = merged.dropna(subset=[f"resid_factor_{k+1}" for k in range(4)])
+    return merged, all_resid_cols
 
 
 def rolling_stats(series, window=WINDOW, min_w=MIN_WINDOW):
@@ -138,9 +137,8 @@ def persistence_filter(alerts, min_c=PERSISTENCE):
 def run_ews():
     print("=== Stage 5: Early Warning Signals ===\n")
 
-    df = load_residuals()
+    df, resid_cols = load_residuals()
     countries = sorted(df["country_name"].unique())
-    resid_cols = [f"resid_{k+1}" for k in range(4)]
     print(f"Countries: {len(countries)}")
     print(f"Indicators: rolling variance, AR(1), kurtosis")
     print(f"Country-relative z-scores (baseline ≤{BASELINE_END}), z-cap={Z_CAP}")
@@ -210,7 +208,7 @@ def run_ews():
                         c.append(max(0, best[m][t]) * 2)
                 csd_idx[t] = np.mean(c) if c else 0
 
-        raw = (factor_alerts >= 2) | ((factor_alerts >= 1) & (csd_idx > 3.0))
+        raw = (factor_alerts >= 3) | ((factor_alerts >= 2) & (csd_idx > 2.5)) | ((factor_alerts >= 1) & (csd_idx > 4.0))
         persistent = persistence_filter(raw)
 
         for t in range(len(years)):

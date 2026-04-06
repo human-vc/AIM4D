@@ -147,6 +147,7 @@ def dcc_garch_beta(y, x):
     rho = ewma_correlation(z_y, z_x)
 
     beta_dcc = rho * sigma_y / np.maximum(sigma_x, 1e-10)
+    beta_dcc = np.nan_to_num(beta_dcc, nan=1.0, posinf=10.0, neginf=-10.0)
     return beta_dcc, rho, sigma_y, sigma_x
 
 

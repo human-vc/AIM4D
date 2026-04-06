@@ -255,7 +255,7 @@ def run_ews():
 
     known_w = {}
     for c, info in KNOWN_EPISODES.items():
-        for y in range(info["onset"] - LEAD_YEARS, info["peak"] + 1):
+        for y in range(info["onset"] - LEAD_YEARS, info["onset"] + 1):
             known_w[(c, y)] = True
 
     alerts = ews_df[ews_df["ews_alert"]]

@@ -46,7 +46,8 @@ def build_spatial_edges(mapping, countries_iso3):
     cow_map = dict(zip(mapping["country_text_id"], mapping["COWcode"]))
     iso3_map = {v: k for k, v in cow_map.items()}
 
-    cont = pd.read_csv("data/contiguity/DirectContiguity320/contdird.csv", low_memory=False)
+    base = os.path.dirname(os.path.abspath(__file__))
+    cont = pd.read_csv(os.path.join(base, "..", "data", "contiguity", "DirectContiguity320", "contdird.csv"), low_memory=False)
     land = cont[cont["conttype"] <= 2].groupby(["state1no", "state2no"]).last().reset_index()
     contig_pairs = set()
     for _, row in land.iterrows():
@@ -55,7 +56,8 @@ def build_spatial_edges(mapping, countries_iso3):
             contig_pairs.add((countries_iso3.index(s1), countries_iso3.index(s2)))
             contig_pairs.add((countries_iso3.index(s2), countries_iso3.index(s1)))
 
-    atop = pd.read_csv("data/atop/ATOP 5.1 (.csv)/atop5_1dy.csv", low_memory=False, encoding="latin-1")
+    base_atop = os.path.dirname(os.path.abspath(__file__))
+    atop = pd.read_csv(os.path.join(base_atop, "..", "data", "atop", "ATOP 5.1 (.csv)", "atop5_1dy.csv"), low_memory=False, encoding="latin-1")
     alliance_by_year = {}
     for yr in range(1990, 2026):
         active = atop[(atop["atopally"] == 1) & (atop["year"] >= yr - 5) & (atop["year"] <= yr)]
@@ -297,6 +299,8 @@ def mmd_kernel(h1, h2, bandwidth=1.0):
 
 
 def train_model(x, y, edge_index, mask_train, mask_test, in_dim):
+    torch.manual_seed(42)
+    np.random.seed(42)
     model = INETARNet(in_dim)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)

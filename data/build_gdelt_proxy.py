@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 
@@ -78,6 +79,7 @@ print(out.describe())
 print()
 print(out.head(10))
 
-out.to_csv('/Users/jacobcrainic/AIM4D/data/gdelt_proxy.csv', index=False)
-out.to_csv('/Users/jacobcrainic/AIM4D/data/gdelt_country_year.csv', index=False)
+data_dir = os.path.dirname(os.path.abspath(__file__))
+out.to_csv(os.path.join(data_dir, 'gdelt_proxy.csv'), index=False)
+out.to_csv(os.path.join(data_dir, 'gdelt_country_year.csv'), index=False)
 print(f"\nSaved to data/gdelt_proxy.csv and data/gdelt_country_year.csv")

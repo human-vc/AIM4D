@@ -4,7 +4,6 @@ import re
 import numpy as np
 import pandas as pd
 from scipy import linalg
-from scipy.spatial.transform import Rotation
 from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

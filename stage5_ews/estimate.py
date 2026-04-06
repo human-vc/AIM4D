@@ -30,19 +30,39 @@ KNOWN_EPISODES = {
 
 def load_residuals():
     base = os.path.dirname(os.path.abspath(__file__))
-    scores = pd.read_csv(os.path.join(base, "..", "stage4_nscm", "contagion_scores.csv"))
-    factors = pd.read_csv(os.path.join(base, "..", "stage1_factors", "country_year_factors.csv"))
+    resid_path = os.path.join(base, "..", "stage4_nscm", "nscm_residuals.csv")
+    scores_path = os.path.join(base, "..", "stage4_nscm", "contagion_scores.csv")
+    factors_path = os.path.join(base, "..", "stage1_factors", "country_year_factors.csv")
 
-    merged = factors.merge(
-        scores[["country_text_id", "year", "contagion_score", "domestic_score"]],
-        on=["country_text_id", "year"], how="inner"
-    )
+    if os.path.exists(resid_path):
+        resid = pd.read_csv(resid_path)
+        scores = pd.read_csv(scores_path)
+        factors = pd.read_csv(factors_path)
 
-    factor_cols = ["factor_1", "factor_2", "factor_3", "factor_4"]
-    for k, fc in enumerate(factor_cols):
-        merged[f"resid_{k+1}"] = merged.groupby("country_text_id")[fc].diff() * merged["domestic_score"]
+        merged = factors[["country_name", "country_text_id", "year"]].merge(
+            resid, on=["country_text_id", "year"], how="inner"
+        ).merge(
+            scores[["country_text_id", "year", "contagion_score", "domestic_score"]],
+            on=["country_text_id", "year"], how="inner"
+        )
 
-    merged = merged.dropna(subset=[f"resid_{k+1}" for k in range(4)])
+        dom_cols = [c for c in resid.columns if c.startswith("nscm_resid_domestic_")]
+        for k, dc in enumerate(dom_cols):
+            merged[f"resid_{k+1}"] = merged[dc]
+        print(f"Loaded NSCM domestic residuals ({len(dom_cols)} dimensions)")
+    else:
+        print("NSCM residuals not found, falling back to factor-based")
+        scores = pd.read_csv(scores_path)
+        factors = pd.read_csv(factors_path)
+        merged = factors.merge(
+            scores[["country_text_id", "year", "contagion_score", "domestic_score"]],
+            on=["country_text_id", "year"], how="inner"
+        )
+        factor_cols = ["factor_1", "factor_2", "factor_3", "factor_4"]
+        for k, fc in enumerate(factor_cols):
+            merged[f"resid_{k+1}"] = merged.groupby("country_text_id")[fc].diff() * merged["domestic_score"]
+
+    merged = merged.dropna(subset=[f"resid_{k+1}" for k in range(min(4, len([c for c in merged.columns if c.startswith("resid_")])))])
     return merged
 
 

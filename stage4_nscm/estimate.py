@@ -391,11 +391,45 @@ def run_stage4():
     print(f"\nTraining INE-TARNet on spatio-temporal graph...")
     model = train_model(x, y, edge_index, mask_train, mask_test, in_dim)
 
+    output_dir = os.path.dirname(os.path.abspath(__file__))
+
     print(f"\nCounterfactual decomposition...")
     model.eval()
     with torch.no_grad():
         full_ei = torch.cat([spatial_ei, temporal_ei], dim=1)
         y_full, domestic, spillover = model.counterfactual_decompose(x, full_ei, spatial_ei)
+
+        y_pred_full, y_pred_local, _, _ = model(x, full_ei)
+        nscm_resid_full = (y - y_pred_full).numpy()
+        nscm_resid_domestic = (y - y_pred_local).numpy()
+
+    resid_rows = []
+    for nid in range(len(node_country)):
+        rrow = {"country_text_id": node_country[nid], "year": node_year[nid]}
+        for k in range(OUTCOME_DIM):
+            rrow[f"nscm_resid_full_{k}"] = nscm_resid_full[nid, k]
+            rrow[f"nscm_resid_domestic_{k}"] = nscm_resid_domestic[nid, k]
+        resid_rows.append(rrow)
+    resid_df = pd.DataFrame(resid_rows)
+    resid_df.to_csv(os.path.join(output_dir, "nscm_residuals.csv"), index=False)
+    print(f"Saved NSCM residuals ({len(resid_df)} rows)")
+
+    print(f"Computing per-factor contagion scores...")
+    with torch.no_grad():
+        h_full, _ = model.encode(x, full_ei)
+        logits_full = model.outcome_logits(h_full)
+
+        factor_spillovers = {}
+        for fk in range(TREATMENT_DIM):
+            x_partial = x.clone()
+            lag_start = x.shape[1] - TREATMENT_DIM * 3
+            for edge_type in range(3):
+                col_idx = lag_start + edge_type * TREATMENT_DIM + fk
+                if col_idx < x_partial.shape[1]:
+                    x_partial[:, col_idx] = 0.0
+            h_partial, _ = model.encode(x_partial, full_ei)
+            logits_partial = model.outcome_logits(h_partial)
+            factor_spillovers[fk] = logits_full - logits_partial
 
     rows = []
     cname_map = df.drop_duplicates("country_text_id").set_index("country_text_id")["country_name"]
@@ -414,6 +448,9 @@ def run_stage4():
         }
         for k in range(OUTCOME_DIM):
             row[f"spillover_state_{k}"] = spillover[nid, k].item()
+        for fk in range(TREATMENT_DIM):
+            fk_mag = factor_spillovers[fk][nid].abs().sum().item()
+            row[f"contagion_factor_{fk+1}"] = fk_mag / (total + 1e-10)
         rows.append(row)
 
     scores_df = pd.DataFrame(rows)

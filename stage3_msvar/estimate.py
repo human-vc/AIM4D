@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 FACTOR_COLS = ["factor_1", "factor_2", "factor_3", "factor_4"]
 N_STATES = 5
-N_RESTARTS = 50
+N_RESTARTS = 20
 DIRICHLET_DIAG = 50
 DIRICHLET_OFF = 2
 MIN_F1_MARGIN = 0.15
@@ -425,8 +425,16 @@ def run_stage3():
     print("=== Stage 3: MS Regime Classification + TVTP ===\n")
 
     df, beta_cols = load_inputs()
-    obs_cols = FACTOR_COLS + beta_cols
-    print(f"Features ({len(obs_cols)}): {FACTOR_COLS} + {beta_cols}")
+
+    lag_cols = []
+    for fc in FACTOR_COLS:
+        lcol = f"lag_{fc}"
+        df[lcol] = df.groupby("country_name")[fc].shift(1)
+        lag_cols.append(lcol)
+    df = df.dropna(subset=lag_cols)
+
+    obs_cols = FACTOR_COLS + lag_cols
+    print(f"Features ({len(obs_cols)}): {FACTOR_COLS} + {lag_cols} (MS-VAR(1) with lagged factors)")
 
     X_all, lengths, country_order = prepare_sequences(df, obs_cols)
     print(f"Panel: {len(country_order)} countries, {sum(lengths)} obs\n")
@@ -467,12 +475,24 @@ def run_stage3():
     print(f"Phase 2: TVTP with macro covariates\n")
 
     macro = load_macro()
+    gdelt_path = os.path.join(os.path.dirname(__file__), "..", "data", "gdelt_country_year.csv")
+    if os.path.exists(gdelt_path):
+        gdelt = pd.read_csv(gdelt_path)
+        gdelt = gdelt.rename(columns={"country_code": "iso3"})
+        if macro is not None:
+            macro = macro.merge(gdelt, on=["iso3", "year"], how="outer")
+        else:
+            macro = gdelt
+        print(f"  GDELT loaded: {len(gdelt)} rows, covariates: {[c for c in gdelt.columns if c not in ['iso3','year']]}")
+
     if macro is None:
         print("No macro data — skipping TVTP")
         state_df = baseline_state_df
         kw_final = kw_base
     else:
-        all_cov_cols = ["gdp_pc", "gdp_growth", "urbanization", "resource_rents", "trade_openness", "military_spending"]
+        all_cov_cols = ["gdp_pc", "gdp_growth", "urbanization", "resource_rents", "trade_openness",
+                        "military_spending", "protest_count", "conflict_count", "repression_count",
+                        "avg_goldstein", "avg_tone"]
         available = [c for c in all_cov_cols if c in macro.columns]
         selected_covs = lasso_select(baseline_state_df, macro, available)[:3]
 

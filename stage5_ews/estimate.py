@@ -25,6 +25,16 @@ KNOWN_EPISODES = {
     "Burma/Myanmar": {"onset": 2021, "peak": 2022, "type": "coup"},
     "Mali": {"onset": 2020, "peak": 2021, "type": "coup"},
     "Burkina Faso": {"onset": 2022, "peak": 2022, "type": "coup"},
+    "Nicaragua": {"onset": 2007, "peak": 2021, "type": "backsliding"},
+    "Philippines": {"onset": 2016, "peak": 2022, "type": "backsliding"},
+    "India": {"onset": 2014, "peak": 2024, "type": "backsliding"},
+    "Brazil": {"onset": 2019, "peak": 2022, "type": "backsliding"},
+    "El Salvador": {"onset": 2019, "peak": 2024, "type": "backsliding"},
+    "Russia": {"onset": 2000, "peak": 2012, "type": "backsliding"},
+    "Serbia": {"onset": 2012, "peak": 2020, "type": "backsliding"},
+    "Bangladesh": {"onset": 2009, "peak": 2024, "type": "backsliding"},
+    "Thailand": {"onset": 2014, "peak": 2014, "type": "coup"},
+    "Egypt": {"onset": 2013, "peak": 2014, "type": "coup"},
 }
 
 

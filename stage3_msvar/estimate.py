@@ -490,11 +490,27 @@ def run_stage3():
         state_df = baseline_state_df
         kw_final = kw_base
     else:
+        gdelt_event_cols = ["protest_count", "conflict_count", "repression_count", "avg_goldstein", "avg_tone"]
+        for gc in gdelt_event_cols:
+            lag_col = f"{gc}_lag1"
+            if gc in macro.columns:
+                macro[lag_col] = macro.groupby("iso3")[gc].shift(1)
+
         all_cov_cols = ["gdp_pc", "gdp_growth", "urbanization", "resource_rents", "trade_openness",
-                        "military_spending", "protest_count", "conflict_count", "repression_count",
-                        "avg_goldstein", "avg_tone"]
+                        "military_spending"] + gdelt_event_cols + [f"{gc}_lag1" for gc in gdelt_event_cols]
         available = [c for c in all_cov_cols if c in macro.columns]
         selected_covs = lasso_select(baseline_state_df, macro, available)[:3]
+
+        gdelt_in_top3 = any(gc in selected_covs or f"{gc}_lag1" in selected_covs for gc in gdelt_event_cols)
+        if not gdelt_in_top3:
+            best_gdelt = None
+            for gc in [f"{g}_lag1" for g in gdelt_event_cols] + gdelt_event_cols:
+                if gc in available and gc not in selected_covs:
+                    best_gdelt = gc
+                    break
+            if best_gdelt:
+                print(f"  GDELT forced inclusion: adding {best_gdelt} as 4th covariate")
+                selected_covs = selected_covs[:2] + [best_gdelt]
 
         if not selected_covs:
             print("No covariates selected — using baseline")

@@ -393,7 +393,48 @@ def run_ews():
             print(f"  {country}: no military threat alert")
 
     ews_df["combined_alert"] = ews_df["ews_alert"] | ews_df["election_alert"] | ews_df["dem_vulnerability_alert"] | ews_df["military_threat_alert"]
-    ews_df["combined_risk"] = ews_df["csd_index"] + ews_df["election_vulnerability"] * 0.5
+
+    print(f"\n{'='*60}")
+    print(f"Meta-learner calibration")
+    print(f"{'='*60}\n")
+
+    from sklearn.linear_model import LogisticRegressionCV
+    from sklearn.preprocessing import StandardScaler as SS
+
+    known_w = {}
+    for c, info in KNOWN_EPISODES.items():
+        for y in range(info["onset"] - LEAD_YEARS, info["onset"] + 1):
+            known_w[(c, y)] = True
+
+    ews_df["label"] = ews_df.apply(lambda r: 1 if (r["country_name"], r["year"]) in known_w else 0, axis=1)
+
+    meta_features = ["csd_index", "election_vulnerability", "party_threat", "mil_zscore"]
+    available_meta = [f for f in meta_features if f in ews_df.columns]
+    X_meta = ews_df[available_meta].fillna(0).values
+    y_meta = ews_df["label"].values
+    train_mask = ews_df["year"] <= TRAIN_CUTOFF
+
+    scaler_meta = SS()
+    X_meta_scaled = scaler_meta.fit_transform(X_meta)
+
+    if y_meta[train_mask].sum() >= 3:
+        meta_model = LogisticRegressionCV(cv=3, scoring="average_precision", max_iter=1000, random_state=42)
+        meta_model.fit(X_meta_scaled[train_mask], y_meta[train_mask])
+        ews_df["calibrated_risk"] = meta_model.predict_proba(X_meta_scaled)[:, 1]
+
+        coefs = dict(zip(available_meta, meta_model.coef_[0]))
+        print(f"  Meta-learner coefficients:")
+        for feat, coef in sorted(coefs.items(), key=lambda x: -abs(x[1])):
+            print(f"    {feat}: {coef:+.3f}")
+
+        ews_df["meta_alert"] = ews_df["calibrated_risk"] > ews_df[train_mask]["calibrated_risk"].quantile(0.95)
+        ews_df["combined_alert"] = ews_df["combined_alert"] | ews_df["meta_alert"]
+        print(f"  Meta-learner alerts (p95): {ews_df['meta_alert'].sum()}")
+    else:
+        ews_df["calibrated_risk"] = ews_df["csd_index"]
+        print(f"  Insufficient positive examples for meta-learner, using CSD index")
+
+    ews_df["combined_risk"] = ews_df["calibrated_risk"] if "calibrated_risk" in ews_df.columns else ews_df["csd_index"]
 
     print(f"\n{'='*60}")
     print(f"Validation (CSD + election combined)")

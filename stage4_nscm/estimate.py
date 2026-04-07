@@ -157,17 +157,22 @@ def build_spatiotemporal_graph(df, countries_iso3, years, contig_pairs, alliance
                 temporal_edges_src.append(offset + i)
                 temporal_edges_dst.append(prev_offset + i)
 
-        treat_t = treatment[offset:offset + N]
+        if t > 0:
+            prev_offset = (t - 1) * N
+            treat_lag = treatment[prev_offset:prev_offset + N]
+        else:
+            treat_lag = treatment[offset:offset + N]
+
         spatial_lag_contig[offset:offset + N] = neighbor_mean(
-            treat_t, [i for i, j in contig_pairs], [j for i, j in contig_pairs], N
+            treat_lag, [i for i, j in contig_pairs], [j for i, j in contig_pairs], N
         )
         ally_src = [i for i, j in ally_pairs]
         ally_dst = [j for i, j in ally_pairs]
-        spatial_lag_alliance[offset:offset + N] = neighbor_mean(treat_t, ally_src, ally_dst, N)
+        spatial_lag_alliance[offset:offset + N] = neighbor_mean(treat_lag, ally_src, ally_dst, N)
 
         t_src = [s - offset for s in trade_edges_src if offset <= s < offset + N]
         t_dst = [d - offset for d in trade_edges_dst if offset <= d < offset + N]
-        spatial_lag_trade[offset:offset + N] = neighbor_mean(treat_t, t_src, t_dst, N)
+        spatial_lag_trade[offset:offset + N] = neighbor_mean(treat_lag, t_src, t_dst, N)
 
     node_features_aug = torch.cat([
         node_features,

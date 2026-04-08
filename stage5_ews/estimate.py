@@ -593,6 +593,57 @@ def run_ews():
                 print(f"    Top {100-p}%: precision={prec_at_p:.1%}, recall={recall_at_p:.1%} (thresh={thresh:.2f})")
 
     print(f"\n{'='*60}")
+    print(f"Expanding-window temporal CV")
+    print(f"{'='*60}\n")
+
+    windows = [
+        (2005, 2008), (2008, 2011), (2011, 2014),
+        (2014, 2017), (2017, 2020), (2020, 2023),
+    ]
+    window_aucs = []
+    window_detections = []
+
+    for train_end, test_end in windows:
+        w_train = valid[valid["year"] <= train_end]
+        w_test = valid[(valid["year"] > train_end) & (valid["year"] <= test_end)]
+
+        if w_test["label"].sum() == 0 or w_test["label"].nunique() < 2:
+            continue
+
+        try:
+            w_auc = roc_auc_score(w_test["label"], w_test["combined_risk"])
+        except ValueError:
+            continue
+
+        test_episodes = set()
+        for c, info in KNOWN_EPISODES.items():
+            if train_end < info["onset"] <= test_end:
+                test_episodes.add(c)
+
+        n_detected = 0
+        for ep_country in test_episodes:
+            ep_onset = KNOWN_EPISODES[ep_country]["onset"]
+            ep_pre = ews_df[(ews_df["country_name"] == ep_country) &
+                            (ews_df["year"] >= ep_onset - LEAD_YEARS) &
+                            (ews_df["year"] < ep_onset) &
+                            (ews_df["year"] > train_end)]
+            if len(ep_pre) > 0 and ep_pre["combined_alert"].any():
+                n_detected += 1
+
+        window_aucs.append(w_auc)
+        n_eps = len(test_episodes)
+        det_rate = n_detected / n_eps if n_eps > 0 else 0
+        window_detections.append(det_rate)
+        print(f"  {train_end+1}-{test_end}: AUC={w_auc:.3f}, episodes={n_eps}, detected={n_detected}/{n_eps}")
+
+    if window_aucs:
+        mean_auc = np.mean(window_aucs)
+        std_auc = np.std(window_aucs)
+        print(f"\n  Mean AUC across windows: {mean_auc:.3f} +/- {std_auc:.3f}")
+        print(f"  Mean detection rate: {np.mean(window_detections):.0%}")
+        print(f"  (This is the robust generalization estimate across 6 temporal windows)")
+
+    print(f"\n{'='*60}")
     print(f"Case studies")
     print(f"{'='*60}\n")
 

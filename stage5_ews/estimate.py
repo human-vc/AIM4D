@@ -190,17 +190,27 @@ def compute_election_vulnerability():
     else:
         vdem["opp_autonomy"] = np.nan
 
-    vdem["party_threat"] = 0.0
+    components = []
     mask = ~vdem["opp_antidem"].isna()
+    c1 = pd.Series(np.nan, index=vdem.index)
     if mask.any():
-        vdem.loc[mask, "party_threat"] += (1 - vdem.loc[mask, "opp_antidem"]).clip(0, 1) * 3
+        c1[mask] = (1 - vdem.loc[mask, "opp_antidem"]).clip(0, 1)
+    components.append(c1)
+
     mask = ~vdem["opp_exclusion"].isna()
+    c2 = pd.Series(np.nan, index=vdem.index)
     if mask.any():
-        vdem.loc[mask, "party_threat"] += vdem.loc[mask, "opp_exclusion"].clip(0, 1) * 3
+        c2[mask] = vdem.loc[mask, "opp_exclusion"].clip(0, 1)
+    components.append(c2)
+
     mask = ~vdem["opp_autonomy"].isna()
+    c3 = pd.Series(np.nan, index=vdem.index)
     if mask.any():
-        low_autonomy = (4 - vdem.loc[mask, "opp_autonomy"].clip(0, 4)) / 4
-        vdem.loc[mask, "party_threat"] += low_autonomy * 2
+        c3[mask] = (4 - vdem.loc[mask, "opp_autonomy"].clip(0, 4)) / 4
+    components.append(c3)
+
+    comp_df = pd.concat(components, axis=1)
+    vdem["party_threat"] = comp_df.mean(axis=1).fillna(0) * 8
 
     vdem["election_vulnerability"] = vdem["party_threat"] * vdem["election_within_2yr"]
 
@@ -320,7 +330,7 @@ def run_ews():
     print(f"  Election thresholds: high={ev_high:.2f} (p80), moderate={ev_moderate:.2f} (p50 of nonzero)")
     ews_df["election_alert"] = (
         (ews_df["election_vulnerability"] > ev_high) |
-        ((ews_df["party_threat"] > 4.5) & (ews_df["election_within_2yr"] > 0) & (ews_df["csd_index"] > 1.0))
+        ((ews_df["party_threat"] > 4.0) & (ews_df["election_within_2yr"] > 0) & (ews_df["csd_index"] > 1.0))
     )
     n_elec_alerts = ews_df["election_alert"].sum()
     print(f"  Election alerts: {n_elec_alerts}")

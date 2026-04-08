@@ -169,7 +169,13 @@ def estimate_country_factor_beta(y, x):
 
     beta_dcc, rho, sig_y, sig_x = dcc_garch_beta(y, x)
 
-    beta_combined = 0.5 * beta_kalman + 0.5 * beta_dcc
+    resid_kalman = y - x * beta_kalman
+    resid_dcc = y - x * beta_dcc
+    mse_kalman = np.mean(resid_kalman ** 2) + 1e-10
+    mse_dcc = np.mean(resid_dcc ** 2) + 1e-10
+    w_kalman = (1 / mse_kalman) / (1 / mse_kalman + 1 / mse_dcc)
+    w_dcc = 1 - w_kalman
+    beta_combined = w_kalman * beta_kalman + w_dcc * beta_dcc
 
     return beta_combined, P_smooth, q_var, r_var, result.fun, rho
 

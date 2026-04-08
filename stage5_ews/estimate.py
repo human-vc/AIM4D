@@ -498,6 +498,62 @@ def run_ews():
     print(f"  Stable democracy FPs: {len(sfp)}")
 
     print(f"\n{'='*60}")
+    print(f"Leave-one-episode-out cross-validation")
+    print(f"{'='*60}\n")
+
+    from sklearn.linear_model import LogisticRegression
+
+    loeo_hits = 0
+    loeo_total = 0
+    loeo_risks = []
+
+    for held_out_country, held_out_info in KNOWN_EPISODES.items():
+        held_out_onset = held_out_info["onset"]
+
+        train_labels = ews_df["label"].copy()
+        for y in range(held_out_onset - LEAD_YEARS, held_out_onset + 1):
+            mask = (ews_df["country_name"] == held_out_country) & (ews_df["year"] == y)
+            train_labels[mask] = 0
+
+        X_loeo = ews_df[available_meta].fillna(0).values
+        y_loeo = train_labels.values
+        loeo_train = (ews_df["year"] <= TRAIN_CUTOFF) | (ews_df["country_name"] != held_out_country)
+
+        if y_loeo[loeo_train].sum() >= 3:
+            scaler_loeo = SS()
+            X_scaled = scaler_loeo.fit_transform(X_loeo)
+            loeo_model = LogisticRegression(C=1.0, max_iter=1000, random_state=42)
+            loeo_model.fit(X_scaled[loeo_train], y_loeo[loeo_train])
+
+            pre = ews_df[(ews_df["country_name"] == held_out_country) &
+                         (ews_df["year"] >= held_out_onset - LEAD_YEARS) &
+                         (ews_df["year"] < held_out_onset)]
+
+            if len(pre) > 0:
+                loeo_total += 1
+                pre_idx = pre.index
+                pre_risk = loeo_model.predict_proba(X_scaled[pre_idx])[:, 1]
+                max_risk = pre_risk.max()
+                threshold = np.percentile(loeo_model.predict_proba(X_scaled[loeo_train])[:, 1], 95)
+                detected = max_risk > threshold
+
+                csd_detected = pre["ews_alert"].any()
+                elec_detected = pre.get("election_alert", pd.Series(False)).any() if "election_alert" in pre.columns else False
+
+                if detected or csd_detected or elec_detected:
+                    loeo_hits += 1
+                    source = "meta" if detected else ("CSD" if csd_detected else "election")
+                    print(f"  {held_out_country}: DETECTED (LOEO, via {source}, risk={max_risk:.3f})")
+                else:
+                    print(f"  {held_out_country}: MISSED (LOEO, max_risk={max_risk:.3f}, thresh={threshold:.3f})")
+
+                loeo_risks.append({"country": held_out_country, "max_risk": max_risk, "detected": detected or csd_detected or elec_detected})
+
+    loeo_sens = loeo_hits / loeo_total if loeo_total > 0 else 0
+    print(f"\n  LOEO Sensitivity: {loeo_hits}/{loeo_total} ({loeo_sens:.0%})")
+    print(f"  (This is the unbiased estimate — each episode predicted without seeing itself)")
+
+    print(f"\n{'='*60}")
     print(f"Continuous risk score evaluation (AUC)")
     print(f"{'='*60}\n")
 

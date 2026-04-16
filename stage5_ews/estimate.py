@@ -528,7 +528,7 @@ def run_ews():
     print(f"Meta-learner calibration")
     print(f"{'='*60}\n")
 
-    from sklearn.linear_model import LogisticRegressionCV
+    from sklearn.linear_model import LogisticRegressionCV, LogisticRegression
     from sklearn.preprocessing import StandardScaler as SS
 
     known_w = {}
@@ -654,16 +654,18 @@ def run_ews():
         # Use selected features for final models
         X_selected = X_meta_scaled[:, selected_mask] if n_selected >= 3 else X_meta_scaled
 
-        # (4) Gradient boosting ensemble (captures nonlinear interactions)
+        # (4) Stacked ensemble with cross-validated weights
+        # Reduces CV variance vs fixed 50/50 (Wolpert 1992, Breiman 1996)
         from sklearn.ensemble import GradientBoostingClassifier
+        from sklearn.model_selection import StratifiedKFold
 
-        # Model A: Logistic regression (calibrated probabilities)
+        # Model A: Logistic regression (calibrated, low variance)
         meta_lr = LogisticRegressionCV(cv=3, scoring="average_precision", max_iter=1000, random_state=42)
         meta_lr.fit(X_selected[train_mask], y_meta[train_mask],
                     sample_weight=time_weights[train_mask])
         lr_risk = meta_lr.predict_proba(X_selected)[:, 1]
 
-        # Model B: Gradient boosting (nonlinear interactions, heavy regularization)
+        # Model B: Gradient boosting (nonlinear, higher variance)
         meta_gb = GradientBoostingClassifier(
             n_estimators=100, max_depth=3, learning_rate=0.05,
             subsample=0.8, min_samples_leaf=20, random_state=42,
@@ -672,10 +674,47 @@ def run_ews():
                     sample_weight=time_weights[train_mask])
         gb_risk = meta_gb.predict_proba(X_selected)[:, 1]
 
-        # Ensemble: average of logistic + gradient boosting
-        ews_df["calibrated_risk"] = 0.5 * lr_risk + 0.5 * gb_risk
+        # Cross-validated stacking: learn optimal LR/GB weight via internal CV
+        X_train_sel = X_selected[train_mask]
+        y_train = y_meta[train_mask]
+        w_train = time_weights[train_mask]
+        n_cv_folds = 3
+        oof_lr = np.zeros(X_train_sel.shape[0])
+        oof_gb = np.zeros(X_train_sel.shape[0])
 
-        print(f"\n  Ensemble meta-learner (LogisticCV + GradientBoosting):")
+        skf = StratifiedKFold(n_splits=n_cv_folds, shuffle=True, random_state=42)
+        for fold_train, fold_val in skf.split(X_train_sel, y_train):
+            # LR fold
+            lr_fold = LogisticRegression(C=1.0, max_iter=1000, random_state=42)
+            lr_fold.fit(X_train_sel[fold_train], y_train[fold_train],
+                        sample_weight=w_train[fold_train])
+            oof_lr[fold_val] = lr_fold.predict_proba(X_train_sel[fold_val])[:, 1]
+
+            # GB fold
+            gb_fold = GradientBoostingClassifier(
+                n_estimators=100, max_depth=3, learning_rate=0.05,
+                subsample=0.8, min_samples_leaf=20, random_state=42,
+            )
+            gb_fold.fit(X_train_sel[fold_train], y_train[fold_train],
+                        sample_weight=w_train[fold_train])
+            oof_gb[fold_val] = gb_fold.predict_proba(X_train_sel[fold_val])[:, 1]
+
+        # Learn stacking weight via logistic on OOF predictions
+        stack_X = np.column_stack([oof_lr, oof_gb])
+        stack_model = LogisticRegression(C=10.0, max_iter=1000, random_state=42)
+        stack_model.fit(stack_X, y_train, sample_weight=w_train)
+        stack_coefs = stack_model.coef_[0]
+        # Convert to weights via softmax
+        w_lr = np.exp(stack_coefs[0]) / (np.exp(stack_coefs[0]) + np.exp(stack_coefs[1]))
+        w_gb = 1.0 - w_lr
+        # Clamp to avoid extreme weights
+        w_lr = np.clip(w_lr, 0.2, 0.8)
+        w_gb = 1.0 - w_lr
+
+        ews_df["calibrated_risk"] = w_lr * lr_risk + w_gb * gb_risk
+
+        print(f"\n  Stacked ensemble (cross-validated weights):")
+        print(f"    LR weight: {w_lr:.3f}, GB weight: {w_gb:.3f}")
         print(f"    LR component range: [{lr_risk[train_mask].min():.4f}, {lr_risk[train_mask].max():.4f}]")
         print(f"    GB component range: [{gb_risk[train_mask].min():.4f}, {gb_risk[train_mask].max():.4f}]")
 
@@ -822,9 +861,6 @@ def run_ews():
     print(f"Leave-one-episode-out cross-validation")
     print(f"{'='*60}\n")
 
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.ensemble import GradientBoostingClassifier
-
     loeo_results_by_tier = {"alert": 0, "warning": 0, "watch": 0}
     loeo_total = 0
     loeo_risks = []
@@ -845,7 +881,7 @@ def run_ews():
             scaler_loeo = SS()
             X_scaled = scaler_loeo.fit_transform(X_loeo)
 
-            # Same ensemble as main model: LR + GB
+            # Same stacked ensemble as main model
             loeo_lr = LogisticRegression(C=1.0, max_iter=1000, random_state=42)
             loeo_lr.fit(X_scaled[loeo_train], y_loeo[loeo_train],
                         sample_weight=time_weights[loeo_train])
@@ -863,11 +899,11 @@ def run_ews():
             if len(pre) > 0:
                 loeo_total += 1
                 pre_idx = pre.index
-                pre_risk = 0.5 * loeo_lr.predict_proba(X_scaled[pre_idx])[:, 1] + \
-                           0.5 * loeo_gb.predict_proba(X_scaled[pre_idx])[:, 1]
+                pre_risk = w_lr * loeo_lr.predict_proba(X_scaled[pre_idx])[:, 1] + \
+                           w_gb * loeo_gb.predict_proba(X_scaled[pre_idx])[:, 1]
                 max_risk = pre_risk.max()
-                train_preds = 0.5 * loeo_lr.predict_proba(X_scaled[loeo_train])[:, 1] + \
-                              0.5 * loeo_gb.predict_proba(X_scaled[loeo_train])[:, 1]
+                train_preds = w_lr * loeo_lr.predict_proba(X_scaled[loeo_train])[:, 1] + \
+                              w_gb * loeo_gb.predict_proba(X_scaled[loeo_train])[:, 1]
 
                 # Evaluate at all three tiers
                 thresh_alert = np.percentile(train_preds, 98)

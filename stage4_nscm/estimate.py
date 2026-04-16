@@ -19,7 +19,7 @@ OUTCOME_DIM = 5
 HIDDEN_DIM = 32
 EPOCHS = 250
 LR = 3e-3
-TRAIN_CUTOFF = 2019
+TRAIN_CUTOFF = 2021
 
 
 def load_all_data():
@@ -231,6 +231,10 @@ class INETARNet(nn.Module):
         self.treatment_dim = treatment_dim
         self.spatial_lag_dim = treatment_dim * 3
 
+        # Learned convex W combination (Neumayer & Plumper 2016, LeSage & Pace 2014)
+        # Raw logits → softmax gives α_contig, α_alliance, α_trade
+        self.w_logits = nn.Parameter(torch.zeros(3))
+
         self.ego_encoder = nn.Sequential(
             nn.Linear(in_dim, hidden), nn.ELU(),
             nn.Linear(hidden, hidden),
@@ -258,10 +262,27 @@ class INETARNet(nn.Module):
         self.gps_mu = nn.Sequential(nn.Linear(repr_dim, hidden), nn.ELU(), nn.Linear(hidden, treatment_dim))
         self.gps_logvar = nn.Sequential(nn.Linear(repr_dim, hidden), nn.ELU(), nn.Linear(hidden, treatment_dim))
 
+    def get_w_weights(self):
+        """Return learned convex combination weights for the three W matrices."""
+        return F.softmax(self.w_logits, dim=0)
+
+    def apply_learned_w(self, x):
+        """Reweight the three spatial lag blocks using learned α weights."""
+        alpha = self.get_w_weights()
+        base_dim = x.shape[1] - self.spatial_lag_dim
+        x_base = x[:, :base_dim]
+        lag_contig = x[:, base_dim:base_dim + self.treatment_dim]
+        lag_alliance = x[:, base_dim + self.treatment_dim:base_dim + 2 * self.treatment_dim]
+        lag_trade = x[:, base_dim + 2 * self.treatment_dim:base_dim + 3 * self.treatment_dim]
+        weighted_lag = alpha[0] * lag_contig + alpha[1] * lag_alliance + alpha[2] * lag_trade
+        # Concatenate weighted composite lag (replicated 3x to preserve input dim)
+        return torch.cat([x_base, weighted_lag, weighted_lag, weighted_lag], dim=-1)
+
     def encode(self, x, edge_index):
-        h_ego = self.ego_encoder(x)
+        x_weighted = self.apply_learned_w(x)
+        h_ego = self.ego_encoder(x_weighted)
         if edge_index.shape[1] > 0:
-            h_gnn = F.elu(self.norm1(self.gcn1(x, edge_index)))
+            h_gnn = F.elu(self.norm1(self.gcn1(x_weighted, edge_index)))
             h_gnn = F.elu(self.norm2(self.gcn2(h_gnn, edge_index)))
             h_exp = self.exposure(h_gnn, edge_index)
         else:
@@ -411,6 +432,13 @@ def run_stage4():
 
     print(f"\nTraining INE-TARNet on spatio-temporal graph...")
     model = train_model(x, y, edge_index, mask_train, mask_test, in_dim)
+
+    # Report learned W weights
+    w_weights = model.get_w_weights().detach().numpy()
+    w_names = ["contiguity", "alliance", "trade"]
+    print(f"\n  Learned convex W weights (Neumayer & Plumper 2016):")
+    for name, w in zip(w_names, w_weights):
+        print(f"    α_{name}: {w:.3f}")
 
     output_dir = os.path.dirname(os.path.abspath(__file__))
 

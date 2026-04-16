@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 WINDOW = 8
 MIN_WINDOW = 5
 BASELINE_END = 2005
-TRAIN_CUTOFF = 2019
+TRAIN_CUTOFF = 2021
 Z_THRESHOLD = 1.5
 Z_CAP = 10.0
 MIN_ABS_VAR_PCTL = 0.30
@@ -19,10 +19,11 @@ N_SURROGATES = 50  # Reduced for speed; 200 for final paper runs
 KENDALL_SIG = 0.05
 
 KNOWN_EPISODES = {
+    # === Original 18 (confirmed by V-Dem v16) ===
     "Hungary": {"onset": 2010, "peak": 2018, "type": "backsliding"},
     "Türkiye": {"onset": 2013, "peak": 2017, "type": "backsliding"},
     "Poland": {"onset": 2015, "peak": 2019, "type": "backsliding"},
-    "Venezuela": {"onset": 2005, "peak": 2013, "type": "backsliding"},
+    "Venezuela": {"onset": 2002, "peak": 2013, "type": "backsliding"},  # V-Dem onset 2002
     "Tunisia": {"onset": 2021, "peak": 2023, "type": "backsliding"},
     "Burma/Myanmar": {"onset": 2021, "peak": 2022, "type": "coup"},
     "Mali": {"onset": 2020, "peak": 2021, "type": "coup"},
@@ -34,9 +35,35 @@ KNOWN_EPISODES = {
     "El Salvador": {"onset": 2019, "peak": 2024, "type": "backsliding"},
     "Russia": {"onset": 2000, "peak": 2012, "type": "backsliding"},
     "Serbia": {"onset": 2012, "peak": 2020, "type": "backsliding"},
-    "Bangladesh": {"onset": 2009, "peak": 2024, "type": "backsliding"},
+    "Bangladesh": {"onset": 2007, "peak": 2024, "type": "backsliding"},  # V-Dem onset 2007
     "Thailand": {"onset": 2014, "peak": 2014, "type": "coup"},
     "Egypt": {"onset": 2013, "peak": 2014, "type": "coup"},
+    # === New: Sudden autocratization (coups/collapse) ===
+    "Fiji": {"onset": 2006, "peak": 2007, "type": "coup"},
+    "Honduras": {"onset": 2009, "peak": 2010, "type": "coup"},
+    "Niger": {"onset": 2009, "peak": 2010, "type": "coup"},
+    "Guinea": {"onset": 2009, "peak": 2010, "type": "coup"},
+    "Guinea-Bissau": {"onset": 2012, "peak": 2013, "type": "coup"},
+    "Libya": {"onset": 2014, "peak": 2015, "type": "coup"},
+    "Afghanistan": {"onset": 2021, "peak": 2022, "type": "coup"},
+    "Sudan": {"onset": 2021, "peak": 2022, "type": "coup"},
+    "Chad": {"onset": 2021, "peak": 2022, "type": "coup"},
+    # === New: Gradual backsliding (democracy → electoral autocracy) ===
+    "Ukraine": {"onset": 2010, "peak": 2013, "type": "backsliding"},
+    "Maldives": {"onset": 2013, "peak": 2017, "type": "backsliding"},
+    "Zambia": {"onset": 2013, "peak": 2020, "type": "backsliding"},
+    "Montenegro": {"onset": 2007, "peak": 2020, "type": "backsliding"},
+    "North Macedonia": {"onset": 2011, "peak": 2016, "type": "backsliding"},
+    "Kenya": {"onset": 2007, "peak": 2008, "type": "backsliding"},
+    "Bolivia": {"onset": 2019, "peak": 2022, "type": "backsliding"},
+    "Benin": {"onset": 2019, "peak": 2023, "type": "backsliding"},
+    "Ivory Coast": {"onset": 2020, "peak": 2022, "type": "backsliding"},
+    "Nigeria": {"onset": 2021, "peak": 2024, "type": "backsliding"},
+    "Guyana": {"onset": 2021, "peak": 2023, "type": "backsliding"},
+    # === New: Liberal democracy downward ===
+    "Mauritius": {"onset": 2017, "peak": 2023, "type": "backsliding"},
+    "Belarus": {"onset": 1996, "peak": 2024, "type": "backsliding"},
+    "Georgia": {"onset": 2024, "peak": 2025, "type": "backsliding"},
 }
 
 

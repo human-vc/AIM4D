@@ -649,6 +649,9 @@ def run_ews():
         ews_df["network_exposure"] = 0
         ews_df["csd_x_network"] = 0
 
+    # Deduplicate after all merges (some data sources have duplicate country-year keys)
+    ews_df = ews_df.drop_duplicates(subset=["country_text_id", "year"], keep="first").reset_index(drop=True)
+
     # --- Feature engineering for meta-learner ---
     base_features = ["csd_index", "mv_csd_index", "election_vulnerability", "party_threat",
                      "mil_zscore", "network_exposure", "csd_x_network"] + dsp_available + gdelt_features

@@ -548,6 +548,61 @@ def run_ews():
         else:
             print(f"  {country}: no military threat alert")
 
+    # GDELT event z-scores as coup precursor features
+    gdelt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "gdelt_country_year.csv")
+    gdelt_features = []
+    if os.path.exists(gdelt_path):
+        gdelt = pd.read_csv(gdelt_path)
+        gdelt = gdelt.rename(columns={"country_code": "country_text_id"})
+        for col in ["protest_count", "conflict_count", "repression_count"]:
+            if col in gdelt.columns:
+                # Country-relative z-scores (rolling 5yr baseline)
+                gdelt[f"{col}_mean"] = gdelt.groupby("country_text_id")[col].transform(
+                    lambda x: x.rolling(5, min_periods=3).mean().shift(1)
+                )
+                gdelt[f"{col}_std"] = gdelt.groupby("country_text_id")[col].transform(
+                    lambda x: x.rolling(5, min_periods=3).std().shift(1)
+                )
+                gdelt[f"{col}_zscore"] = (gdelt[col] - gdelt[f"{col}_mean"]) / gdelt[f"{col}_std"].clip(lower=1)
+                gdelt[f"{col}_zscore"] = gdelt[f"{col}_zscore"].clip(-10, 10)
+                gdelt_features.append(f"{col}_zscore")
+
+        # 1yr lag of z-scores (signal the year before)
+        for col in ["protest_count", "conflict_count", "repression_count"]:
+            lag_col = f"{col}_zscore_lag1"
+            gdelt[lag_col] = gdelt.groupby("country_text_id")[f"{col}_zscore"].shift(1)
+            gdelt_features.append(lag_col)
+
+        gdelt_merge_cols = ["country_text_id", "year"] + gdelt_features
+        gdelt_merge_cols = [c for c in gdelt_merge_cols if c in gdelt.columns]
+        ews_df = ews_df.merge(gdelt[gdelt_merge_cols], on=["country_text_id", "year"], how="left")
+        for gf in gdelt_features:
+            if gf in ews_df.columns:
+                ews_df[gf] = ews_df[gf].fillna(0)
+        print(f"\n  GDELT event features loaded: {gdelt_features}")
+
+    # V-Dem institutional erosion indicators (for Poland/Tunisia-type gradual backsliding)
+    institutional_cols = ["v2juncind", "v2xlg_legcon", "v2x_jucon", "v2exrescon"]
+    try:
+        vdem_inst_avail = [c for c in institutional_cols if c in pd.read_csv(vdem_path, low_memory=False, nrows=1).columns]
+        if vdem_inst_avail:
+            inst_data = pd.read_csv(vdem_path, low_memory=False,
+                                     usecols=["country_text_id", "year"] + vdem_inst_avail)
+            # Compute year-over-year change (decline = negative)
+            inst_features = []
+            for col in vdem_inst_avail:
+                inst_data[f"{col}_change"] = inst_data.groupby("country_text_id")[col].diff()
+                inst_data[f"{col}_change2"] = inst_data.groupby("country_text_id")[col].diff(2)
+                inst_features += [f"{col}_change", f"{col}_change2"]
+            ews_df = ews_df.merge(inst_data[["country_text_id", "year"] + inst_features],
+                                   on=["country_text_id", "year"], how="left")
+            for f in inst_features:
+                ews_df[f] = ews_df[f].fillna(0)
+            gdelt_features += inst_features  # add to same list for meta-learner inclusion
+            print(f"  Institutional erosion features loaded: {vdem_inst_avail}")
+    except Exception:
+        pass
+
     # Legacy OR-based alert (kept for backwards compatibility, NOT primary metric)
     ews_df["combined_alert_legacy"] = ews_df["ews_alert"] | ews_df["election_alert"] | ews_df["dem_vulnerability_alert"] | ews_df["military_threat_alert"]
 
@@ -596,7 +651,7 @@ def run_ews():
 
     # --- Feature engineering for meta-learner ---
     base_features = ["csd_index", "mv_csd_index", "election_vulnerability", "party_threat",
-                     "mil_zscore", "network_exposure", "csd_x_network"] + dsp_available
+                     "mil_zscore", "network_exposure", "csd_x_network"] + dsp_available + gdelt_features
     available_base = [f for f in base_features if f in ews_df.columns]
 
     # (1) Lagged features: 1yr and 2yr lags capture trends

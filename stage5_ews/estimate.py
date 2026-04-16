@@ -381,11 +381,10 @@ def run_ews():
         # Multivariate CSD alert: significant upward trend in eigenvalue OR cross-correlation
         mv_csd_alert = eig_sig | xcorr_sig | var_sig
 
-        # --- Enhanced CSD index combining univariate and multivariate ---
+        # --- CSD index: univariate only (original formula, preserved for meta-learner) ---
         csd_idx = np.zeros(len(years))
         for t in range(len(years)):
             components = []
-            # Univariate components (original)
             if not np.isnan(max_abs[t]) and max_abs[t] > abs_var_floor:
                 for m in ["var_z", "ar1_z", "kurt_z"]:
                     if not np.isnan(best[m][t]):
@@ -393,14 +392,19 @@ def run_ews():
                 for m in ["var_tau", "ar1_tau"]:
                     if not np.isnan(best[m][t]):
                         components.append(max(0, best[m][t]) * 2)
-            # Multivariate components (new)
-            if not np.isnan(eig_z[t]):
-                components.append(min(Z_CAP, max(0, eig_z[t])))
-            if not np.isnan(xcorr_z[t]):
-                components.append(min(Z_CAP, max(0, xcorr_z[t])))
-            if not np.isnan(eig_tau[t]):
-                components.append(max(0, eig_tau[t]) * 3)  # Weight tau higher for significance
             csd_idx[t] = np.mean(components) if components else 0
+
+        # --- Multivariate CSD index (separate channel for meta-learner) ---
+        mv_csd_idx = np.zeros(len(years))
+        for t in range(len(years)):
+            mv_components = []
+            if not np.isnan(eig_z[t]):
+                mv_components.append(min(Z_CAP, max(0, eig_z[t])))
+            if not np.isnan(xcorr_z[t]):
+                mv_components.append(min(Z_CAP, max(0, xcorr_z[t])))
+            if not np.isnan(eig_tau[t]):
+                mv_components.append(max(0, eig_tau[t]) * 3)
+            mv_csd_idx[t] = np.mean(mv_components) if mv_components else 0
 
         # --- Relaxed alert: univariate OR multivariate CSD ---
         raw_univariate = (factor_alerts >= 3) | ((factor_alerts >= 2) & (csd_idx > 2.5)) | ((factor_alerts >= 1) & (csd_idx > 4.0))
@@ -415,6 +419,7 @@ def run_ews():
                 "var_z": best["var_z"][t], "ar1_z": best["ar1_z"][t], "kurt_z": best["kurt_z"][t],
                 "var_trend": best["var_tau"][t], "ar1_trend": best["ar1_tau"][t],
                 "n_factors": factor_alerts[t], "csd_index": csd_idx[t],
+                "mv_csd_index": mv_csd_idx[t],
                 "dom_eig_z": eig_z[t], "xcorr_z": xcorr_z[t],
                 "eig_trend_sig": eig_sig[t], "xcorr_trend_sig": xcorr_sig[t],
                 "mv_csd_alert": mv_csd_alert[t],
@@ -562,8 +567,8 @@ def run_ews():
         ews_df["network_exposure"] = 0
         ews_df["csd_x_network"] = 0
 
-    meta_features = ["csd_index", "election_vulnerability", "party_threat", "mil_zscore",
-                     "network_exposure", "csd_x_network"] + dsp_available
+    meta_features = ["csd_index", "mv_csd_index", "election_vulnerability", "party_threat",
+                     "mil_zscore", "network_exposure", "csd_x_network"] + dsp_available
     available_meta = [f for f in meta_features if f in ews_df.columns]
 
     ews_df["era_post2015"] = (ews_df["year"] > 2015).astype(float)
@@ -739,7 +744,7 @@ def run_ews():
 
     from sklearn.linear_model import LogisticRegression
 
-    loeo_hits = 0
+    loeo_results_by_tier = {"alert": 0, "warning": 0, "watch": 0}
     loeo_total = 0
     loeo_risks = []
 
@@ -770,20 +775,47 @@ def run_ews():
                 pre_idx = pre.index
                 pre_risk = loeo_model.predict_proba(X_scaled[pre_idx])[:, 1]
                 max_risk = pre_risk.max()
-                threshold = np.percentile(loeo_model.predict_proba(X_scaled[loeo_train])[:, 1], 95)
-                detected = max_risk > threshold
+                train_preds = loeo_model.predict_proba(X_scaled[loeo_train])[:, 1]
 
-                if detected:
-                    loeo_hits += 1
-                    print(f"  {held_out_country}: DETECTED (LOEO, risk={max_risk:.3f}, thresh={threshold:.3f})")
+                # Evaluate at all three tiers
+                thresh_alert = np.percentile(train_preds, 98)
+                thresh_warning = np.percentile(train_preds, 95)
+                thresh_watch = np.percentile(train_preds, 80)
+
+                if max_risk > thresh_alert:
+                    tier = "alert"
+                elif max_risk > thresh_warning:
+                    tier = "warning"
+                elif max_risk > thresh_watch:
+                    tier = "watch"
                 else:
-                    print(f"  {held_out_country}: MISSED (LOEO, risk={max_risk:.3f}, thresh={threshold:.3f})")
+                    tier = "none"
 
-                loeo_risks.append({"country": held_out_country, "max_risk": max_risk, "detected": detected})
+                for t in ["alert", "warning", "watch"]:
+                    if tier == "alert" or (tier == "warning" and t != "alert") or (tier == "watch"):
+                        loeo_results_by_tier[t] += (1 if tier != "none" and
+                            (t == "watch" or (t == "warning" and tier in ["warning", "alert"]) or
+                             (t == "alert" and tier == "alert")) else 0)
 
-    loeo_sens = loeo_hits / loeo_total if loeo_total > 0 else 0
-    print(f"\n  LOEO Sensitivity: {loeo_hits}/{loeo_total} ({loeo_sens:.0%})")
-    print(f"  (This is the unbiased estimate — each episode predicted without seeing itself)")
+                detected = tier != "none"
+                if detected:
+                    print(f"  {held_out_country}: DETECTED [{tier}] (LOEO, risk={max_risk:.3f})")
+                else:
+                    print(f"  {held_out_country}: MISSED (LOEO, risk={max_risk:.3f}, watch_thresh={thresh_watch:.3f})")
+
+                loeo_risks.append({"country": held_out_country, "max_risk": max_risk,
+                                   "tier": tier, "detected": detected})
+
+    # Recount properly
+    loeo_watch = sum(1 for r in loeo_risks if r["tier"] in ["watch", "warning", "alert"])
+    loeo_warning = sum(1 for r in loeo_risks if r["tier"] in ["warning", "alert"])
+    loeo_alert = sum(1 for r in loeo_risks if r["tier"] == "alert")
+
+    print(f"\n  LOEO Sensitivity by tier (unbiased):")
+    print(f"    Watch (P80):   {loeo_watch}/{loeo_total} ({loeo_watch/loeo_total:.0%})" if loeo_total > 0 else "")
+    print(f"    Warning (P95): {loeo_warning}/{loeo_total} ({loeo_warning/loeo_total:.0%})" if loeo_total > 0 else "")
+    print(f"    Alert (P98):   {loeo_alert}/{loeo_total} ({loeo_alert/loeo_total:.0%})" if loeo_total > 0 else "")
+    print(f"  (Each episode predicted without seeing itself)")
 
     print(f"\n{'='*60}")
     print(f"Continuous risk score evaluation (AUC)")

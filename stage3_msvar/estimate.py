@@ -126,9 +126,21 @@ def quantile_init(X_all, n_states=N_STATES):
 
 
 def regularize_transmat(P, n_states=N_STATES):
+    """
+    Asymmetric Dirichlet prior: consolidated democracies get much higher
+    self-transition probability (Svolik 2008, Epstein et al. 2006).
+    """
+    # State-specific diagonal priors: democracy states are stickier
+    diag_priors = {
+        0: 500,   # liberal_democracy: ~0.5% annual transition probability
+        1: 200,   # electoral_democracy: ~1% annual transition
+        2: DIRICHLET_DIAG,   # hybrid: standard
+        3: DIRICHLET_DIAG,   # competitive_authoritarian: standard
+        4: 200,   # closed_authoritarian: also sticky
+    }
     alpha = np.full((n_states, n_states), DIRICHLET_OFF)
-    np.fill_diagonal(alpha, DIRICHLET_DIAG)
     for i in range(n_states):
+        alpha[i, i] = diag_priors.get(i, DIRICHLET_DIAG)
         for j in range(n_states):
             if abs(i - j) > 2:
                 alpha[i, j] = 0.1
@@ -321,6 +333,51 @@ def fit_tvtp(emit_seqs, Z_seqs, baseline_model, n_covs):
     return theta
 
 
+MIN_STATE_DURATION = 3  # Minimum years a state must persist (eliminates single-year oscillations)
+
+
+def smooth_states(states, posteriors, min_duration=MIN_STATE_DURATION):
+    """
+    Remove single-year state oscillations by enforcing minimum duration.
+    If a state lasts fewer than min_duration years and the states before and
+    after are the same, replace it with the surrounding state. Otherwise use
+    the posterior probabilities to pick the most likely stable assignment.
+    """
+    smoothed = states.copy()
+    T = len(states)
+
+    # Find runs
+    i = 0
+    while i < T:
+        j = i
+        while j < T and states[j] == states[i]:
+            j += 1
+        run_len = j - i
+
+        if run_len < min_duration:
+            # Short run — check if surrounded by the same state
+            prev_state = states[i - 1] if i > 0 else -1
+            next_state = states[j] if j < T else -1
+
+            if prev_state == next_state and prev_state >= 0:
+                # Surrounded by same state: absorb into it
+                for k in range(i, j):
+                    smoothed[k] = prev_state
+            elif prev_state >= 0:
+                # Use posterior: pick between prev and current based on avg posterior
+                for k in range(i, j):
+                    if posteriors[k, prev_state] > posteriors[k, states[i]] * 0.7:
+                        smoothed[k] = prev_state
+            elif next_state >= 0:
+                for k in range(i, j):
+                    if posteriors[k, next_state] > posteriors[k, states[i]] * 0.7:
+                        smoothed[k] = next_state
+
+        i = j
+
+    return smoothed
+
+
 def decode_all(emit_seqs, Z_seqs, lengths, country_order, df, baseline_model, theta=None):
     rows = []
     total_ll = 0.0
@@ -332,6 +389,9 @@ def decode_all(emit_seqs, Z_seqs, lengths, country_order, df, baseline_model, th
             Z_seqs[i] if Z_seqs else None,
         )
         total_ll += ll
+
+        # Smooth out single-year oscillations in stable countries
+        states = smooth_states(states, posteriors)
 
         cdf = df[df["country_name"] == country].sort_values("year")
         years = cdf["year"].values[-len(states):]

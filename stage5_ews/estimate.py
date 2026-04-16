@@ -1206,6 +1206,28 @@ def run_ews():
                   f"var_z={r['var_z']:.1f} ar1_z={r['ar1_z']:.1f} f={int(r['n_factors'])}/9{a}")
         print()
 
+    # Prospective risk ranking: 2026-2031 (Goldstone et al. 2010 format)
+    print(f"\n{'='*60}")
+    print(f"Prospective Risk Ranking: 2026-2031 Autocratization Risk")
+    print(f"(Genuine prospective forecast — verifiable against future data)")
+    print(f"{'='*60}\n")
+
+    latest_year = ews_df["year"].max()
+    latest = ews_df[ews_df["year"] == latest_year].copy()
+    latest = latest.sort_values("combined_risk", ascending=False)
+
+    print(f"  {'Rank':<5} {'Country':<30} {'Risk':>8} {'Tier':<10} {'Key Signals'}")
+    print(f"  {'-'*80}")
+    for rank, (_, r) in enumerate(latest.head(25).iterrows(), 1):
+        signals = []
+        if r.get("ews_alert", False): signals.append("CSD")
+        if r.get("mv_csd_alert", False): signals.append("mvCSD")
+        if r.get("election_alert", False): signals.append("ELEC")
+        if r.get("military_threat_alert", False): signals.append("MIL")
+        sig_str = "+".join(signals) if signals else "meta"
+        tier = r.get("alert_tier", "none")
+        print(f"  {rank:<5} {r['country_name']:<30} {r['combined_risk']:>8.4f} {tier:<10} {sig_str}")
+
     return ews_df
 
 

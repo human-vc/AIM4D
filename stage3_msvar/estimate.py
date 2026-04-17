@@ -333,49 +333,52 @@ def fit_tvtp(emit_seqs, Z_seqs, baseline_model, n_covs):
     return theta
 
 
-MIN_STATE_DURATION = 3  # Minimum years a state must persist (eliminates single-year oscillations)
+POSTERIOR_THRESHOLD = 0.65  # New state must exceed this to override status quo
+DURATION_PARAMS = {
+    0: (15.0, 0.20),  # liberal_democracy: half-life 15yr, max bonus 0.20
+    1: (10.0, 0.15),  # electoral_democracy: half-life 10yr
+    2: (5.0, 0.10),   # hybrid: half-life 5yr
+    3: (5.0, 0.10),   # competitive_authoritarian
+    4: (8.0, 0.15),   # closed_authoritarian
+}
 
 
-def smooth_states(states, posteriors, min_duration=MIN_STATE_DURATION):
+def stabilize_states(states, posteriors):
     """
-    Remove single-year state oscillations by enforcing minimum duration.
-    If a state lasts fewer than min_duration years and the states before and
-    after are the same, replace it with the surrounding state. Otherwise use
-    the posterior probabilities to pick the most likely stable assignment.
+    Posterior threshold + duration-dependent stabilization.
+    Requires supermajority posterior (0.65+) to reclassify, with the
+    threshold increasing for long-duration states (Svolik 2008).
+    Eliminates boundary oscillations (Canada, Portugal, South Korea)
+    while preserving genuine transitions (Hungary 2010).
     """
-    smoothed = states.copy()
     T = len(states)
+    stabilized = states.copy()
+    duration = 1
 
-    # Find runs
-    i = 0
-    while i < T:
-        j = i
-        while j < T and states[j] == states[i]:
-            j += 1
-        run_len = j - i
+    for t in range(1, T):
+        current_state = stabilized[t - 1]
+        proposed_state = states[t]
 
-        if run_len < min_duration:
-            # Short run — check if surrounded by the same state
-            prev_state = states[i - 1] if i > 0 else -1
-            next_state = states[j] if j < T else -1
+        if proposed_state != current_state:
+            # Compute effective threshold: base + duration bonus
+            base = POSTERIOR_THRESHOLD
+            if current_state in DURATION_PARAMS:
+                half_life, max_bonus = DURATION_PARAMS[current_state]
+                bonus = max_bonus * (1.0 - np.exp(-duration / half_life)) if duration > 0 else 0
+            else:
+                bonus = 0
+            threshold = min(0.90, base + bonus)
 
-            if prev_state == next_state and prev_state >= 0:
-                # Surrounded by same state: absorb into it
-                for k in range(i, j):
-                    smoothed[k] = prev_state
-            elif prev_state >= 0:
-                # Use posterior: pick between prev and current based on avg posterior
-                for k in range(i, j):
-                    if posteriors[k, prev_state] > posteriors[k, states[i]] * 0.7:
-                        smoothed[k] = prev_state
-            elif next_state >= 0:
-                for k in range(i, j):
-                    if posteriors[k, next_state] > posteriors[k, states[i]] * 0.7:
-                        smoothed[k] = next_state
+            if posteriors[t, proposed_state] >= threshold:
+                stabilized[t] = proposed_state
+                duration = 1
+            else:
+                stabilized[t] = current_state
+                duration += 1
+        else:
+            duration += 1
 
-        i = j
-
-    return smoothed
+    return stabilized
 
 
 def decode_all(emit_seqs, Z_seqs, lengths, country_order, df, baseline_model, theta=None):
@@ -390,8 +393,8 @@ def decode_all(emit_seqs, Z_seqs, lengths, country_order, df, baseline_model, th
         )
         total_ll += ll
 
-        # Smooth out single-year oscillations in stable countries
-        states = smooth_states(states, posteriors)
+        # Posterior threshold + duration-dependent stabilization
+        states = stabilize_states(states, posteriors)
 
         cdf = df[df["country_name"] == country].sort_values("year")
         years = cdf["year"].values[-len(states):]

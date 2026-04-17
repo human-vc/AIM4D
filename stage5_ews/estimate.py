@@ -752,76 +752,73 @@ def run_ews():
         # Use selected features for final models
         X_selected = X_meta_scaled[:, selected_mask] if n_selected >= 3 else X_meta_scaled
 
-        # (4) Stacked ensemble with cross-validated weights
-        # Reduces CV variance vs fixed 50/50 (Wolpert 1992, Breiman 1996)
-        from sklearn.ensemble import GradientBoostingClassifier
+        # (4) Stacked ensemble: LR + EBM (fully interpretable, Caruana et al. 2015)
+        # EBM replaces GradientBoosting — glass-box model with per-feature shape functions
+        from interpret.glassbox import ExplainableBoostingClassifier
         from sklearn.model_selection import StratifiedKFold
 
-        # Model A: Logistic regression (calibrated, low variance)
+        # Model A: Logistic regression (calibrated, linear effects)
         meta_lr = LogisticRegressionCV(cv=3, scoring="average_precision", max_iter=1000, random_state=42)
         meta_lr.fit(X_selected[train_mask], y_meta[train_mask],
                     sample_weight=time_weights[train_mask])
         lr_risk = meta_lr.predict_proba(X_selected)[:, 1]
 
-        # Model B: Gradient boosting (nonlinear, higher variance)
-        meta_gb = GradientBoostingClassifier(
-            n_estimators=100, max_depth=3, learning_rate=0.05,
-            subsample=0.8, min_samples_leaf=20, random_state=42,
+        # Model B: Explainable Boosting Machine (nonlinear, fully interpretable)
+        meta_ebm = ExplainableBoostingClassifier(
+            max_bins=128, interactions=15, outer_bags=25, inner_bags=25,
+            learning_rate=0.01, max_rounds=5000, min_samples_leaf=10,
+            random_state=42,
         )
-        meta_gb.fit(X_selected[train_mask], y_meta[train_mask],
-                    sample_weight=time_weights[train_mask])
-        gb_risk = meta_gb.predict_proba(X_selected)[:, 1]
+        meta_ebm.fit(X_selected[train_mask], y_meta[train_mask])
+        ebm_risk = meta_ebm.predict_proba(X_selected)[:, 1]
 
-        # Cross-validated stacking: learn optimal LR/GB weight via internal CV
+        # Cross-validated stacking: learn optimal LR/EBM weight
         X_train_sel = X_selected[train_mask]
         y_train = y_meta[train_mask]
         w_train = time_weights[train_mask]
         n_cv_folds = 3
         oof_lr = np.zeros(X_train_sel.shape[0])
-        oof_gb = np.zeros(X_train_sel.shape[0])
+        oof_ebm = np.zeros(X_train_sel.shape[0])
 
         skf = StratifiedKFold(n_splits=n_cv_folds, shuffle=True, random_state=42)
         for fold_train, fold_val in skf.split(X_train_sel, y_train):
-            # LR fold
             lr_fold = LogisticRegression(C=1.0, max_iter=1000, random_state=42)
             lr_fold.fit(X_train_sel[fold_train], y_train[fold_train],
                         sample_weight=w_train[fold_train])
             oof_lr[fold_val] = lr_fold.predict_proba(X_train_sel[fold_val])[:, 1]
 
-            # GB fold
-            gb_fold = GradientBoostingClassifier(
-                n_estimators=100, max_depth=3, learning_rate=0.05,
-                subsample=0.8, min_samples_leaf=20, random_state=42,
+            ebm_fold = ExplainableBoostingClassifier(
+                max_bins=128, interactions=15, outer_bags=15, inner_bags=15,
+                learning_rate=0.01, max_rounds=3000, min_samples_leaf=10,
+                random_state=42,
             )
-            gb_fold.fit(X_train_sel[fold_train], y_train[fold_train],
-                        sample_weight=w_train[fold_train])
-            oof_gb[fold_val] = gb_fold.predict_proba(X_train_sel[fold_val])[:, 1]
+            ebm_fold.fit(X_train_sel[fold_train], y_train[fold_train])
+            oof_ebm[fold_val] = ebm_fold.predict_proba(X_train_sel[fold_val])[:, 1]
 
-        # Learn stacking weight via logistic on OOF predictions
-        stack_X = np.column_stack([oof_lr, oof_gb])
+        stack_X = np.column_stack([oof_lr, oof_ebm])
         stack_model = LogisticRegression(C=10.0, max_iter=1000, random_state=42)
         stack_model.fit(stack_X, y_train, sample_weight=w_train)
         stack_coefs = stack_model.coef_[0]
-        # Convert to weights via softmax
         w_lr = np.exp(stack_coefs[0]) / (np.exp(stack_coefs[0]) + np.exp(stack_coefs[1]))
-        w_gb = 1.0 - w_lr
-        # Clamp to avoid extreme weights
+        w_ebm = 1.0 - w_lr
         w_lr = np.clip(w_lr, 0.2, 0.8)
-        w_gb = 1.0 - w_lr
+        w_ebm = 1.0 - w_lr
 
-        ews_df["calibrated_risk"] = w_lr * lr_risk + w_gb * gb_risk
+        ews_df["calibrated_risk"] = w_lr * lr_risk + w_ebm * ebm_risk
 
-        print(f"\n  Stacked ensemble (cross-validated weights):")
-        print(f"    LR weight: {w_lr:.3f}, GB weight: {w_gb:.3f}")
-        print(f"    LR component range: [{lr_risk[train_mask].min():.4f}, {lr_risk[train_mask].max():.4f}]")
-        print(f"    GB component range: [{gb_risk[train_mask].min():.4f}, {gb_risk[train_mask].max():.4f}]")
+        print(f"\n  Stacked ensemble — LR + EBM (fully interpretable):")
+        print(f"    LR weight: {w_lr:.3f}, EBM weight: {w_ebm:.3f}")
+        print(f"    LR range: [{lr_risk[train_mask].min():.4f}, {lr_risk[train_mask].max():.4f}]")
+        print(f"    EBM range: [{ebm_risk[train_mask].min():.4f}, {ebm_risk[train_mask].max():.4f}]")
 
-        # GB feature importance
+        # EBM feature importance (inherent — no SHAP needed)
         if n_selected >= 3:
             sel_feats = [f for f, s in zip(all_meta, selected_mask) if s]
-            gb_imp = dict(zip(sel_feats, meta_gb.feature_importances_))
-            print(f"  GB feature importance (top 10):")
-            for feat, imp in sorted(gb_imp.items(), key=lambda x: -x[1])[:10]:
+            ebm_importances = meta_ebm.term_importances()
+            ebm_names = meta_ebm.term_names_
+            print(f"  EBM feature importance (inherent, top 10):")
+            sorted_imp = sorted(zip(ebm_names, ebm_importances), key=lambda x: -x[1])
+            for feat, imp in sorted_imp[:10]:
                 print(f"    {feat}: {imp:.4f}")
 
         # Tiered alerts based on calibrated risk
@@ -979,16 +976,16 @@ def run_ews():
             scaler_loeo = SS()
             X_scaled = scaler_loeo.fit_transform(X_loeo)
 
-            # Same stacked ensemble as main model
+            # Same stacked ensemble: LR + EBM
             loeo_lr = LogisticRegression(C=1.0, max_iter=1000, random_state=42)
             loeo_lr.fit(X_scaled[loeo_train], y_loeo[loeo_train],
                         sample_weight=time_weights[loeo_train])
-            loeo_gb = GradientBoostingClassifier(
-                n_estimators=100, max_depth=3, learning_rate=0.05,
-                subsample=0.8, min_samples_leaf=20, random_state=42,
+            loeo_ebm = ExplainableBoostingClassifier(
+                max_bins=128, interactions=10, outer_bags=15, inner_bags=15,
+                learning_rate=0.01, max_rounds=3000, min_samples_leaf=10,
+                random_state=42,
             )
-            loeo_gb.fit(X_scaled[loeo_train], y_loeo[loeo_train],
-                        sample_weight=time_weights[loeo_train])
+            loeo_ebm.fit(X_scaled[loeo_train], y_loeo[loeo_train])
 
             pre = ews_df[(ews_df["country_name"] == held_out_country) &
                          (ews_df["year"] >= held_out_onset - LEAD_YEARS) &
@@ -998,10 +995,10 @@ def run_ews():
                 loeo_total += 1
                 pre_idx = pre.index
                 pre_risk = w_lr * loeo_lr.predict_proba(X_scaled[pre_idx])[:, 1] + \
-                           w_gb * loeo_gb.predict_proba(X_scaled[pre_idx])[:, 1]
+                           w_ebm * loeo_ebm.predict_proba(X_scaled[pre_idx])[:, 1]
                 max_risk = pre_risk.max()
                 train_preds = w_lr * loeo_lr.predict_proba(X_scaled[loeo_train])[:, 1] + \
-                              w_gb * loeo_gb.predict_proba(X_scaled[loeo_train])[:, 1]
+                              w_ebm * loeo_ebm.predict_proba(X_scaled[loeo_train])[:, 1]
 
                 # Evaluate at all three tiers
                 thresh_alert = np.percentile(train_preds, 98)

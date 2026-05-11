@@ -25,9 +25,11 @@ F1 (warning tier):      0.575
 Detection (watch):      35/37 (95%)
 Detection (warning):    27/37 (73%)
 Detection (alert):      19/37 (51%)
-LOEO watch:             23/37 (62%)
+LOEO watch:             24/37 (65%)   [true country-LOEO, meta-learner level]
+LOEO warning:           11/37 (30%)
+LOEO alert:              1/37  (3%)
 LOEO backsliding:       18/25 (72%)
-LOEO coup:              5/12 (42%)
+LOEO coup:               6/12 (50%)
 Stable democracy FPs:   0
 Alert fire rate:        5.7%
 Lift over random:       12.8x
@@ -41,8 +43,8 @@ STAGE 1: FACTOR EXTRACTION (POET + Bai-Ng IC2 + Varimax)
 
 Factor 1: Institutional entrenchment (v2x_diagacc, v2x_freexp_altinf, v2x_clpol)
 Factor 2: Executive overreach (v2xeg_eqdr, v2peedueq, v2pehealth)
-Factor 3: Civil society suppression (v2fsuffrage, v2asuffrage)
-Factor 4: Informational autocratization (v2xdd_dd, v2xdd_cic)
+Factor 3: Civil society and suffrage (v2fsuffrage, v2asuffrage)
+Factor 4: Direct democratic practice (v2xdd_dd, v2xdd_cic)
 
 Variance: F1=43.2%, F2=5.7%, F3=3.7%, F4=2.4% (cumulative 55.0%)
 Robustness: K=3 kappa=0.67, K=4 kappa=0.66, K=5 kappa=0.55
@@ -76,7 +78,10 @@ STAGE 4: NETWORK CONTAGION (INE-TARNet with Learned Convex W)
 ======================================================================
 
 4,968 nodes | 186,260 edges | 11.7% MSE improvement from network
-Learned W: alpha_contiguity=0.351, alpha_alliance=0.351, alpha_trade=0.298
+Learned W (mean +/- std across 10 seeds, robustness/network_seed_sweep.py):
+  alpha_contiguity = 0.322 +/- 0.013
+  alpha_alliance   = 0.371 +/- 0.015   <-- highest in every seed
+  alpha_trade      = 0.308 +/- 0.018
 
 Domestic vs Network decomposition:
   Hungary:   67.9% network (Visegrad/EU contagion)
@@ -147,20 +152,20 @@ EPISODE DETECTION TABLE (In-Sample)
 LOEO CROSS-VALIDATION (UNBIASED)
 ======================================================================
 
-Overall:     23/37 (62%)
+Overall:     24/37 (65%)   [true country-LOEO]
 Backsliding: 18/25 (72%)
-Coup:         5/12 (42%)
+Coup:         6/12 (50%)
 
 By era:
   Pre-2005:    0/3  (0%)  — onset before training data
   2005-2014:  13/17 (76%) — strongest era
-  2015-2021:   9/15 (60%)
+  2015-2021:  10/15 (67%)
   Post-2021:   1/2  (50%)
 
-LOEO misses:
-  STRUCTURAL: Poland, Venezuela, Russia, Belarus, Georgia, Tunisia
-  COUPS: Mali, Egypt, Fiji, Guinea, Guinea-Bissau, Afghanistan, Chad
-  BORDERLINE: Benin (risk 0.024 vs thresh 0.050)
+LOEO misses (new, true country-LOEO):
+  Backsliding: Poland, Venezuela, Tunisia, Russia, Benin, Belarus, Georgia
+  Coups: Mali, Egypt, Fiji, Guinea, Guinea-Bissau, Afghanistan
+  BORDERLINE: Benin (risk 0.042 vs thresh 0.048), Afghanistan (0.049 vs 0.050)
 
 ======================================================================
 EXPANDING-WINDOW TEMPORAL CV

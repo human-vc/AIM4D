@@ -1,9 +1,17 @@
+"""
+Fallback feature builder: derives event-style country-year features from V-Dem
+indicators (protest/violence/repression). Used only when real GDELT is not
+present at data/gdelt_country_year.csv. Run data/download_gdelt.py first for
+the actual GDELT 1.0 events.
+"""
 import os
 import pandas as pd
 import numpy as np
 
+DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+
 df = pd.read_csv(
-    '/Users/jacobcrainic/AIM4D/data/vdem_v16.csv',
+    os.path.join(DATA_DIR, "vdem_v16.csv"),
     usecols=[
         'country_name', 'country_text_id', 'COWcode', 'year',
         'v2caprotac',
@@ -80,6 +88,15 @@ print()
 print(out.head(10))
 
 data_dir = os.path.dirname(os.path.abspath(__file__))
-out.to_csv(os.path.join(data_dir, 'gdelt_proxy.csv'), index=False)
-out.to_csv(os.path.join(data_dir, 'gdelt_country_year.csv'), index=False)
-print(f"\nSaved to data/gdelt_proxy.csv and data/gdelt_country_year.csv")
+proxy_path = os.path.join(data_dir, "gdelt_proxy.csv")
+gdelt_path = os.path.join(data_dir, "gdelt_country_year.csv")
+
+out.to_csv(proxy_path, index=False)
+print(f"\nSaved fallback to {proxy_path}")
+
+if os.path.exists(gdelt_path):
+    print(f"WARNING: {gdelt_path} already exists; refusing to overwrite real GDELT data.")
+    print("Delete it manually if you intend to use the V-Dem-derived proxy instead.")
+else:
+    out.to_csv(gdelt_path, index=False)
+    print(f"Saved fallback to {gdelt_path} (no real GDELT detected)")

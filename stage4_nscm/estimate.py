@@ -324,9 +324,9 @@ def mmd_kernel(h1, h2, bandwidth=1.0):
     return k11 + k22 - 2 * k12
 
 
-def train_model(x, y, edge_index, mask_train, mask_test, in_dim):
-    torch.manual_seed(42)
-    np.random.seed(42)
+def train_model(x, y, edge_index, mask_train, mask_test, in_dim, seed=42):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
     model = INETARNet(in_dim)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
@@ -403,8 +403,8 @@ def network_ablation_test(model, x, y, edge_index, spatial_ei, temporal_ei,
     }
 
 
-def run_stage4():
-    print("=== Stage 4: Network SCM (Spatio-Temporal Graph) ===\n")
+def run_stage4(seed=42, write_outputs=True):
+    print(f"=== Stage 4: Network SCM (Spatio-Temporal Graph) — seed={seed} ===\n")
 
     df, mapping = load_all_data()
     feature_cols = FACTOR_COLS + BETA_COLS + ["gdp_pc", "urbanization"]
@@ -431,7 +431,7 @@ def run_stage4():
     print(f"  Train nodes: {mask_train.sum()}, Test nodes: {mask_test.sum()}")
 
     print(f"\nTraining INE-TARNet on spatio-temporal graph...")
-    model = train_model(x, y, edge_index, mask_train, mask_test, in_dim)
+    model = train_model(x, y, edge_index, mask_train, mask_test, in_dim, seed=seed)
 
     # Report learned W weights
     w_weights = model.get_w_weights().detach().numpy()
@@ -441,6 +441,9 @@ def run_stage4():
         print(f"    α_{name}: {w:.3f}")
 
     output_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if not write_outputs:
+        return model, None
 
     print(f"\nCounterfactual decomposition...")
     model.eval()
@@ -546,4 +549,8 @@ def run_stage4():
 
 
 if __name__ == "__main__":
-    model, scores_df = run_stage4()
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--seed", type=int, default=42)
+    args = p.parse_args()
+    model, scores_df = run_stage4(seed=args.seed)

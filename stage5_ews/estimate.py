@@ -973,7 +973,7 @@ def run_ews():
 
         X_loeo = ews_df[all_meta].fillna(0).values
         y_loeo = train_labels.values
-        loeo_train = (ews_df["year"] <= TRAIN_CUTOFF) | (ews_df["country_name"] != held_out_country)
+        loeo_train = (ews_df["country_name"] != held_out_country).values
 
         if y_loeo[loeo_train].sum() >= 3:
             scaler_loeo = SS()

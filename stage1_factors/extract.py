@@ -21,8 +21,8 @@ K_MAX = 20
 FACTOR_LABELS = {
     0: "institutional_entrenchment",
     1: "executive_overreach",
-    2: "civil_society_suppression",
-    3: "informational_autocratization",
+    2: "civil_society_and_suffrage",
+    3: "direct_democratic_practice",
 }
 
 

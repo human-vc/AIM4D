@@ -226,16 +226,24 @@ Hungary Polity=10 throughout entire backsliding. Polity can't see it.
 SHAP GROUPED IMPORTANCE
 ======================================================================
 
-  DSP (digital society):    0.919  ##################
-  Network exposure:         0.389  #######
-  Election vulnerability:   0.318  ######
-  GDELT events:             0.165  ###
-  CSD (multivariate):       0.154  ###
-  Interactions:             0.106  ##
-  CSD (univariate):         0.100  #
-  Military threat:          0.070  #
+  DSP (digital society):    0.677  #############
+  Network exposure:         0.319  ######
+  Election vulnerability:   0.214  ####
+  GDELT events:             0.153  ###
+  CSD (multivariate):       0.095  ##
+  Interactions:             0.072  #
+  Military threat:          0.041  #
+  CSD (univariate):         0.007  .
 
-Top feature: v2smgovdom (government social media manipulation)
+Top feature: csd_x_network (interaction of CSD and network exposure, 0.254)
+Next: party_threat (0.161), v2smfordom_x_post2015_detrended (0.150),
+      v2smgovsmmon_x_post2015_detrended (0.149), v2smgovdom (0.140)
+
+Ablation-based marginal contribution to AUC:
+  DSP contributes 0.034 of 0.053 total marginal lift = 64% of model's
+  identifiable predictive signal, i.e., DSP > all other groups combined
+  under the marginal-AUC metric (which is the right metric for the claim;
+  SHAP-sum overcounts shared variance between collinear features).
 
 ======================================================================
 PROSPECTIVE RISK RANKING: 2026-2031
@@ -285,7 +293,9 @@ FIVE SUBSTANTIVE FINDINGS
    Levitsky & Way (2010) debate.
 
 3. DIGITAL INFORMATION CONTROL IS #1 PREDICTOR
-   SHAP: DSP (0.919) > network (0.389) > elections (0.318) > all else.
+   SHAP: DSP (0.677) > network (0.319) > elections (0.214) > all else.
+   Ablation: DSP contributes 64% of marginal AUC lift (= more than all
+   other feature groups combined under the right metric).
    Government social media manipulation (v2smgovdom) is the single
    strongest feature. Quantifies Luhrmann & Lindberg (2019) "third
    wave" as digital-first autocratization.

@@ -845,6 +845,8 @@ def run_ews():
 
     ews_df["combined_risk"] = ews_df["calibrated_risk"] if "calibrated_risk" in ews_df.columns else ews_df["csd_index"]
 
+    ews_df.to_csv(os.path.join(output_dir, "ews_signals.csv"), index=False)
+
     print(f"\n{'='*60}")
     print(f"Validation: episode detection + precision@K")
     print(f"{'='*60}\n")
@@ -1030,7 +1032,15 @@ def run_ews():
                     print(f"  {held_out_country}: MISSED (LOEO, risk={max_risk:.3f}, watch_thresh={thresh_watch:.3f})")
 
                 loeo_risks.append({"country": held_out_country, "max_risk": max_risk,
-                                   "tier": tier, "detected": detected})
+                                   "tier": tier, "detected": detected,
+                                   "type": held_out_info.get("type", "")})
+
+    loeo_df = pd.DataFrame(loeo_risks)
+    if len(loeo_df):
+        loeo_df["detected_watch"] = loeo_df["tier"].isin(["watch", "warning", "alert"]).astype(int)
+        loeo_df["detected_warning"] = loeo_df["tier"].isin(["warning", "alert"]).astype(int)
+        loeo_df["detected_alert"] = (loeo_df["tier"] == "alert").astype(int)
+        loeo_df.to_csv(os.path.join(output_dir, "loeo_results.csv"), index=False)
 
     # Recount properly
     loeo_watch = sum(1 for r in loeo_risks if r["tier"] in ["watch", "warning", "alert"])

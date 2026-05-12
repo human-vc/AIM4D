@@ -1,0 +1,42 @@
+country,type,onset,watch_lead,warning_lead,alert_lead,max_risk
+Hungary,backsliding,2010,5.0,4.0,,0.1960718729658373
+Türkiye,backsliding,2013,5.0,5.0,5.0,0.5096131555671773
+Poland,backsliding,2015,5.0,,,0.0647714093100938
+Venezuela,backsliding,2002,3.0,,,0.0626834902678723
+Tunisia,backsliding,2021,5.0,5.0,5.0,0.6305838635689109
+Burma/Myanmar,coup,2021,5.0,5.0,5.0,0.5989086090474464
+Mali,coup,2020,5.0,4.0,4.0,0.5979551554832734
+Burkina Faso,coup,2022,5.0,5.0,5.0,0.6597167121950155
+Nicaragua,backsliding,2007,5.0,,,0.0955785978347106
+Philippines,backsliding,2016,5.0,5.0,2.0,0.3844514937145618
+India,backsliding,2014,5.0,5.0,5.0,0.3984600176807641
+Brazil,backsliding,2019,3.0,3.0,3.0,0.4846272074575127
+El Salvador,backsliding,2019,,,,
+Russia,backsliding,2000,4.0,,,0.0758146118007631
+Serbia,backsliding,2012,5.0,5.0,,0.306385319616148
+Bangladesh,backsliding,2007,5.0,,,0.1320282539002581
+Thailand,coup,2014,5.0,5.0,5.0,0.4412632371688972
+Egypt,coup,2013,4.0,2.0,2.0,0.3298373763775338
+Fiji,coup,2006,5.0,,,0.1044434211924909
+Honduras,coup,2009,,,,
+Niger,coup,2009,5.0,1.0,,0.3016315589527905
+Guinea,coup,2009,1.0,1.0,,0.1457265664904241
+Guinea-Bissau,coup,2012,4.0,,,0.064298034717916
+Libya,coup,2014,,,,
+Afghanistan,coup,2021,5.0,5.0,5.0,0.398248446938278
+Sudan,coup,2021,5.0,5.0,4.0,0.6411168650231192
+Chad,coup,2021,5.0,5.0,5.0,0.5377171660770235
+Ukraine,backsliding,2010,5.0,3.0,,0.1916681291646306
+Maldives,backsliding,2013,5.0,4.0,,0.273834260862327
+Zambia,backsliding,2013,5.0,1.0,,0.2239108795732414
+Montenegro,backsliding,2007,,,,
+North Macedonia,backsliding,2011,5.0,1.0,,0.1776514332272892
+Kenya,backsliding,2007,5.0,,,0.0859073913875807
+Bolivia,backsliding,2019,5.0,5.0,3.0,0.583904075850367
+Benin,backsliding,2019,3.0,2.0,,0.2732931833771931
+Ivory Coast,backsliding,2020,5.0,5.0,5.0,0.5836582357462419
+Nigeria,backsliding,2021,5.0,5.0,5.0,0.6833353588084005
+Guyana,backsliding,2021,5.0,5.0,5.0,0.73991954441133
+Mauritius,backsliding,2017,5.0,4.0,1.0,0.3514298789685613
+Belarus,backsliding,1996,,,,0.0387356819834213
+Georgia,backsliding,2024,5.0,5.0,4.0,0.338129544416006

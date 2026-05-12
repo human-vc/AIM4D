@@ -13,26 +13,46 @@ Commit: 2f41ea0
 HEADLINE METRICS
 ======================================================================
 
-AUC-ROC:                0.924
-AUC-PR:                 0.590
-CV AUC (6 windows):     0.934 +/- 0.039
-Secondary OOS (8yr):    AUC 0.978, AUC-PR 0.788, 14/15 episodes detected
+AUC-ROC:                0.920   [bootstrap 95% CI 0.902-0.938]
+AUC-PR:                 0.600   [bootstrap 95% CI 0.534-0.663]
+CV AUC (6 windows):     0.937 +/- 0.044
+Secondary OOS (8yr):    AUC 0.981 [0.965-0.994], AUC-PR 0.818, 14/15 episodes detected
 Precision@5:            100%
 Precision@10:           100%
-Precision@20:           80%
-Warning precision:      47.4%
-F1 (warning tier):      0.575
-Detection (watch):      35/37 (95%)
-Detection (warning):    27/37 (73%)
-Detection (alert):      19/37 (51%)
-LOEO watch:             24/37 (65%)   [true country-LOEO, meta-learner level]
+Precision@20:           85%
+Warning precision:      50.4%
+F1 (warning tier):      0.605
+Detection (watch):      34/37 (92%) [Wilson 78-98%]
+Detection (warning):    28/37 (76%) [Wilson 60-87%]
+Detection (alert):      20/37 (54%) [Wilson 38-70%]
+LOEO watch:             26/37 (70%) [Wilson 53-84%]  [true country-LOEO, meta-learner level]
 LOEO warning:           11/37 (30%)
 LOEO alert:              1/37  (3%)
-LOEO backsliding:       18/25 (72%)
-LOEO coup:               6/12 (50%)
+LOEO backsliding:       17/25 (68%) [Wilson 46-85%]
+LOEO coup:               9/12 (75%) [Wilson 43-95%]
 Stable democracy FPs:   0
-Alert fire rate:        5.7%
-Lift over random:       12.8x
+Alert fire rate:        5.5%
+Lift over random:       13.0x
+
+DSP ablation (robustness/dsp_ablation.py):
+  Full features (88):   AUC 0.934, AUC-PR 0.610
+  Without DSP (68):     AUC 0.900, AUC-PR 0.565  (delta -0.034 / -0.045)
+  DSP only (20):        AUC 0.915, AUC-PR 0.525
+  -> DSP carries the load-bearing signal; non-DSP features incremental
+
+Detection lead times (robustness/detection_lead_times.py):
+  Watch tier mean:   4.64 yr (median 5)
+  Warning tier mean: 3.93 yr (median 5)
+  Alert tier mean:   4.11 yr (median 5)
+  Backsliding watch lead: 4.71 yr; Coup watch lead: 4.50 yr
+
+Polity-active subset (robustness/polity_active_validation.py):
+  Full sample AUC: 0.56 (3yr 2pt decline)
+  Active-country AUC: 0.559 [95% CI 0.514-0.606]
+  Active-year AUC: 0.517 [95% CI 0.468-0.566]
+  Spearman rho ~ 0 on n>3500
+  -> Framework is calibrated for V-Dem/FH multidimensional construct,
+     not for Polity institutional-rules construct (Coppedge 2011)
 
 ======================================================================
 STAGE 1: FACTOR EXTRACTION (POET + Bai-Ng IC2 + Varimax)

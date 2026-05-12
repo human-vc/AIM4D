@@ -1,0 +1,38 @@
+country,max_risk,tier,detected,type,detected_watch,detected_warning,detected_alert
+Hungary,0.08685426306540232,watch,True,backsliding,1,0,0
+Türkiye,0.5313600089806018,alert,True,backsliding,1,1,1
+Poland,0.030260982661589917,none,False,backsliding,0,0,0
+Venezuela,0.03793068053118996,none,False,backsliding,0,0,0
+Tunisia,0.0265950802701714,none,False,backsliding,0,0,0
+Burma/Myanmar,0.09403771248420097,watch,True,coup,1,0,0
+Mali,0.05480438266909425,watch,True,coup,1,0,0
+Burkina Faso,0.12222668667027459,watch,True,coup,1,0,0
+Nicaragua,0.04636675478801485,none,False,backsliding,0,0,0
+Philippines,0.09352855754399414,watch,True,backsliding,1,0,0
+India,0.1495611882981408,warning,True,backsliding,1,1,0
+Brazil,0.05537155738559707,watch,True,backsliding,1,0,0
+Russia,0.028327973661307956,none,False,backsliding,0,0,0
+Serbia,0.1725268964870051,warning,True,backsliding,1,1,0
+Bangladesh,0.0803036399645573,watch,True,backsliding,1,0,0
+Thailand,0.23095647863580093,warning,True,coup,1,1,0
+Egypt,0.06990560972575616,watch,True,coup,1,0,0
+Fiji,0.05017599891828338,watch,True,coup,1,0,0
+Niger,0.1768919508241531,warning,True,coup,1,1,0
+Guinea,0.02884534490628033,none,False,coup,0,0,0
+Guinea-Bissau,0.02535459308446234,none,False,coup,0,0,0
+Afghanistan,0.0324840166183022,none,False,coup,0,0,0
+Sudan,0.051330689980204555,watch,True,coup,1,0,0
+Chad,0.06229336916604293,watch,True,coup,1,0,0
+Ukraine,0.11141027111023052,watch,True,backsliding,1,0,0
+Maldives,0.16118838519624207,warning,True,backsliding,1,1,0
+Zambia,0.1625505474304727,warning,True,backsliding,1,1,0
+North Macedonia,0.1251440756304619,watch,True,backsliding,1,0,0
+Kenya,0.0701517116483923,watch,True,backsliding,1,0,0
+Bolivia,0.20538197414108234,warning,True,backsliding,1,1,0
+Benin,0.03053969530389013,none,False,backsliding,0,0,0
+Ivory Coast,0.13884566277745902,warning,True,backsliding,1,1,0
+Nigeria,0.06600727712000568,watch,True,backsliding,1,0,0
+Guyana,0.26381618316995703,warning,True,backsliding,1,1,0
+Mauritius,0.14230018435657343,warning,True,backsliding,1,1,0
+Belarus,0.02468597383285946,none,False,backsliding,0,0,0
+Georgia,0.047742051589236764,none,False,backsliding,0,0,0

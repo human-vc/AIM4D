@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 FACTOR_COLS = ["factor_1", "factor_2", "factor_3", "factor_4"]
 MIN_OBS = 30
+MAX_TRAIN_YEAR = 2019
 
 
 def load_factor_scores():
@@ -151,13 +152,28 @@ def dcc_garch_beta(y, x):
     return beta_dcc, rho, sigma_y, sigma_x
 
 
-def estimate_country_factor_beta(y, x):
-    init_params = np.array([np.log(0.05), np.log(np.var(y) * 0.5 + 1e-6)])
+def estimate_country_factor_beta(y, x, n_train=None):
+    """
+    Estimate time-varying beta with a temporal hold-out.
+
+    Kalman hyperparameters (q_var, r_var) are fit on y[:n_train], x[:n_train]
+    only. The Kalman smoother runs on that pre-cutoff subset; post-cutoff
+    betas are propagated forward by the random-walk model (held at the last
+    pre-cutoff smoothed value). DCC-GARCH parameters are model-free (no MLE),
+    so its beta series can use the full panel without leakage.
+    """
+    if n_train is None or n_train >= len(y):
+        n_train = len(y)
+
+    y_train = y[:n_train]
+    x_train = x[:n_train]
+
+    init_params = np.array([np.log(0.05), np.log(np.var(y_train) * 0.5 + 1e-6)])
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         result = minimize(
-            tvp_loglik_uni, init_params, args=(y, x),
+            tvp_loglik_uni, init_params, args=(y_train, x_train),
             method="L-BFGS-B",
             bounds=[(-8, 2), (-8, 5)],
         )
@@ -165,12 +181,22 @@ def estimate_country_factor_beta(y, x):
     q_var = np.exp(result.x[0])
     r_var = np.exp(result.x[1])
 
-    beta_kalman, P_smooth = kalman_tvp_univariate(y, x, q_var, r_var)
+    beta_kalman_train, P_smooth_train = kalman_tvp_univariate(y_train, x_train, q_var, r_var)
+
+    if n_train < len(y):
+        last_beta = beta_kalman_train[-1]
+        last_P = P_smooth_train[-1]
+        n_extra = len(y) - n_train
+        beta_kalman = np.concatenate([beta_kalman_train, np.full(n_extra, last_beta)])
+        P_smooth = np.concatenate([P_smooth_train, np.full(n_extra, last_P)])
+    else:
+        beta_kalman = beta_kalman_train
+        P_smooth = P_smooth_train
 
     beta_dcc, rho, sig_y, sig_x = dcc_garch_beta(y, x)
 
-    resid_kalman = y - x * beta_kalman
-    resid_dcc = y - x * beta_dcc
+    resid_kalman = y_train - x_train * beta_kalman[:n_train]
+    resid_dcc = y_train - x_train * beta_dcc[:n_train]
     mse_kalman = np.mean(resid_kalman ** 2) + 1e-10
     mse_dcc = np.mean(resid_dcc ** 2) + 1e-10
     w_kalman = (1 / mse_kalman) / (1 / mse_kalman + 1 / mse_dcc)
@@ -199,11 +225,18 @@ def estimate_all_betas():
 
         country_betas = np.zeros((len(years), len(FACTOR_COLS)))
 
+        # dy has length T-1; dy[i] corresponds to the change from year[i] to year[i+1].
+        # Train on diffs whose right endpoint is at or before the cutoff year.
+        n_pre = int((years <= MAX_TRAIN_YEAR).sum())
+        n_train_diffs = max(2, n_pre - 1)
+
         for k, fcol in enumerate(FACTOR_COLS):
             dy = np.diff(y_all[:, k])
             dx = np.diff(gf[:, k])
 
-            beta_smooth, P_smooth, q_var, r_var, nll, rho = estimate_country_factor_beta(dy, dx)
+            beta_smooth, P_smooth, q_var, r_var, nll, rho = estimate_country_factor_beta(
+                dy, dx, n_train=n_train_diffs
+            )
 
             country_betas[0, k] = beta_smooth[0]
             country_betas[1:, k] = beta_smooth

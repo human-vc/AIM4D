@@ -21,20 +21,37 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 OUT = os.path.dirname(os.path.abspath(__file__))
 RNG = np.random.default_rng(42)
-N_BOOT = 1000
+N_BOOT = 2000
 
 
-def bootstrap_auc(y, s, fn=roc_auc_score, n_boot=N_BOOT):
+def bootstrap_auc(y, s, fn=roc_auc_score, n_boot=N_BOOT, clusters=None):
+    """
+    Bootstrap CI on AUC. If `clusters` is supplied, resample countries (pairs
+    cluster bootstrap; Cameron & Miller 2015) so within-country autocorrelation
+    is preserved. Otherwise fall back to i.i.d. resampling on country-years.
+    """
     y = np.asarray(y)
     s = np.asarray(s)
-    n = len(y)
     out = []
-    for _ in range(n_boot):
-        idx = RNG.integers(0, n, n)
-        yy, ss = y[idx], s[idx]
-        if yy.sum() == 0 or yy.sum() == len(yy):
-            continue
-        out.append(fn(yy, ss))
+    if clusters is not None:
+        clusters = np.asarray(clusters)
+        unique = np.unique(clusters)
+        by_cluster = {c: np.where(clusters == c)[0] for c in unique}
+        for _ in range(n_boot):
+            draw = RNG.choice(unique, size=len(unique), replace=True)
+            idx = np.concatenate([by_cluster[c] for c in draw])
+            yy, ss = y[idx], s[idx]
+            if yy.sum() < 2 or yy.sum() == len(yy):
+                continue
+            out.append(fn(yy, ss))
+    else:
+        n = len(y)
+        for _ in range(n_boot):
+            idx = RNG.integers(0, n, n)
+            yy, ss = y[idx], s[idx]
+            if yy.sum() == 0 or yy.sum() == len(yy):
+                continue
+            out.append(fn(yy, ss))
     if not out:
         return np.nan, np.nan, np.nan
     arr = np.array(out)
@@ -65,25 +82,46 @@ def main():
         raise RuntimeError("ews_signals.csv missing label column")
 
     valid = ews.dropna(subset=["combined_risk", "label"])
+    # Exclude post-onset country-years from CI computation (post-treatment;
+    # standard in conflict forecasting evaluation: Goldstone 2010, ViEWS)
+    if "is_postonset" in valid.columns:
+        valid = valid[~valid["is_postonset"]].copy()
     y = valid["label"].astype(int).values
     s = valid["combined_risk"].values
+    clusters = valid["country_name"].values
 
-    print(f"\nFull panel: n={len(valid)}, n_positive={int(y.sum())} ({y.mean():.1%})\n")
+    print(f"\nFull panel (post-onset excluded): n={len(valid)}, "
+          f"n_positive={int(y.sum())} ({y.mean():.1%}), "
+          f"n_countries={len(np.unique(clusters))}\n")
 
-    auc, lo, hi = bootstrap_auc(y, s, roc_auc_score)
-    print(f"  AUC-ROC (in-sample):  {auc:.3f}  95% CI [{lo:.3f}, {hi:.3f}]")
+    auc, lo, hi = bootstrap_auc(y, s, roc_auc_score, clusters=clusters)
+    print(f"  AUC-ROC (in-sample, cluster boot):  {auc:.3f}  95% CI [{lo:.3f}, {hi:.3f}]")
     rows.append({"metric": "auc_roc_in_sample", "point": auc, "ci_low": lo, "ci_high": hi, "n": len(y)})
 
-    auc_pr, lo, hi = bootstrap_auc(y, s, average_precision_score)
-    print(f"  AUC-PR  (in-sample):  {auc_pr:.3f}  95% CI [{lo:.3f}, {hi:.3f}]")
+    auc_pr, lo, hi = bootstrap_auc(y, s, average_precision_score, clusters=clusters)
+    print(f"  AUC-PR  (in-sample, cluster boot):  {auc_pr:.3f}  95% CI [{lo:.3f}, {hi:.3f}]")
     rows.append({"metric": "auc_pr_in_sample", "point": auc_pr, "ci_low": lo, "ci_high": hi, "n": len(y)})
 
-    cutoff = 2017
+    cutoff = 2019
     oos = valid[valid["year"] > cutoff]
     if len(oos) > 0 and oos["label"].sum() > 1:
-        auc, lo, hi = bootstrap_auc(oos["label"].astype(int).values, oos["combined_risk"].values, roc_auc_score)
-        print(f"  AUC-ROC (2017 OOS):   {auc:.3f}  95% CI [{lo:.3f}, {hi:.3f}]  n={len(oos)}")
-        rows.append({"metric": "auc_roc_strict_oos_2017", "point": auc, "ci_low": lo, "ci_high": hi, "n": len(oos)})
+        auc, lo, hi = bootstrap_auc(
+            oos["label"].astype(int).values,
+            oos["combined_risk"].values,
+            roc_auc_score,
+            clusters=oos["country_name"].values,
+        )
+        print(f"  AUC-ROC (OOS year>{cutoff}, cluster): {auc:.3f}  95% CI [{lo:.3f}, {hi:.3f}]  n={len(oos)}")
+        rows.append({"metric": f"auc_roc_oos_{cutoff}", "point": auc, "ci_low": lo, "ci_high": hi, "n": len(oos)})
+
+        auc_pr, lo, hi = bootstrap_auc(
+            oos["label"].astype(int).values,
+            oos["combined_risk"].values,
+            average_precision_score,
+            clusters=oos["country_name"].values,
+        )
+        print(f"  AUC-PR  (OOS year>{cutoff}, cluster): {auc_pr:.3f}  95% CI [{lo:.3f}, {hi:.3f}]  n={len(oos)}")
+        rows.append({"metric": f"auc_pr_oos_{cutoff}", "point": auc_pr, "ci_low": lo, "ci_high": hi, "n": len(oos)})
 
     try:
         from stage5_ews.estimate import KNOWN_EPISODES, LEAD_YEARS

@@ -14,6 +14,7 @@ EXCLUDE_SUFFIXES = (
     "_nr", "_mean", "_3C", "_4C", "_5C",
 )
 MIN_YEAR = 1970
+MAX_TRAIN_YEAR = 2019
 MAX_MISSING = 0.2
 ROW_THRESH = 0.8
 K_MAX = 20
@@ -186,13 +187,21 @@ def label_factors(loading_df, K):
     return labels
 
 
-def extract_factors(min_year=MIN_YEAR, k_max=K_MAX):
+def extract_factors(min_year=MIN_YEAR, max_train_year=MAX_TRAIN_YEAR, k_max=K_MAX):
     df = load_vdem()
     indicators = select_indicators(df)
     panel = build_panel(df, indicators, min_year)
     X, scaler = panel_to_matrix(panel, indicators)
 
-    ic_results, ic_vals, top_eigs = bai_ng_ic(X, k_max)
+    # Fit POET loadings only on pre-cutoff data; project post-cutoff country-years
+    # using those loadings. Honors the temporal hold-out: no post-2017 V-Dem rows
+    # contribute to the latent factor structure.
+    train_mask = panel["year"].values <= max_train_year
+    X_train = X[train_mask]
+    print(f"Fitting POET on {train_mask.sum()}/{len(X)} country-years "
+          f"(year <= {max_train_year})")
+
+    ic_results, ic_vals, top_eigs = bai_ng_ic(X_train, k_max)
     all_maxed = all(ic_results[i] == k_max for i in [1, 2, 3])
     if all_maxed:
         K = ic_results["elbow"]
@@ -201,7 +210,7 @@ def extract_factors(min_year=MIN_YEAR, k_max=K_MAX):
         K = ic_results[2]
         print(f"\nUsing K={K} factors (IC2)")
 
-    result = poet_estimate(X, K)
+    result = poet_estimate(X_train, K)
 
     sign_ref = {
         0: "v2x_polyarchy",
@@ -220,14 +229,24 @@ def extract_factors(min_year=MIN_YEAR, k_max=K_MAX):
                 result["loadings"][:, k] *= -1
                 result["factors"][:, k] *= -1
 
-    var_explained = result["eigenvalues"] / np.trace(X.T @ X / X.shape[0])
+    # Project the FULL panel (incl. post-cutoff country-years) onto factors
+    # using the sign-corrected loadings fit on the training subset.
+    rotated_loadings = result["loadings"]
+    proj = np.linalg.lstsq(
+        rotated_loadings.T @ rotated_loadings,
+        rotated_loadings.T,
+        rcond=None,
+    )[0].T
+    factors_full = X @ proj
+
+    var_explained = result["eigenvalues"] / np.trace(X_train.T @ X_train / X_train.shape[0])
     cumulative = np.cumsum(var_explained)
     print(f"Variance explained: {np.round(var_explained * 100, 1)}%")
     print(f"Cumulative: {np.round(cumulative * 100, 1)}%")
 
     factor_cols = [f"factor_{i+1}" for i in range(K)]
     factor_df = panel[["country_name", "country_text_id", "year"]].copy()
-    factor_df[factor_cols] = result["factors"]
+    factor_df[factor_cols] = factors_full
     factor_df = factor_df.reset_index(drop=True)
 
     loading_df = pd.DataFrame(

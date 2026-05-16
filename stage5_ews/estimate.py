@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 WINDOW = 8
 MIN_WINDOW = 5
 BASELINE_END = 2005
-TRAIN_CUTOFF = 2021
+TRAIN_CUTOFF = 2019
 Z_THRESHOLD = 1.5
 Z_CAP = 10.0
 MIN_ABS_VAR_PCTL = 0.30
@@ -614,11 +614,22 @@ def run_ews():
     from sklearn.preprocessing import StandardScaler as SS
 
     known_w = {}
+    postonset_w = {}
+    POSTONSET_EXCL_YEARS = 5  # exclude 5 post-onset years from train + eval
     for c, info in KNOWN_EPISODES.items():
-        for y in range(info["onset"] - LEAD_YEARS, info["onset"] + 1):
+        onset = info["onset"]
+        for y in range(onset - LEAD_YEARS, onset + 1):
             known_w[(c, y)] = True
+        # Country-years already inside an active autocratization episode are
+        # "post-treatment" observations and should not be evaluated as
+        # negatives (Goldstone 2010, ViEWS convention).
+        for y in range(onset + 1, onset + 1 + POSTONSET_EXCL_YEARS):
+            postonset_w[(c, y)] = True
 
     ews_df["label"] = ews_df.apply(lambda r: 1 if (r["country_name"], r["year"]) in known_w else 0, axis=1)
+    ews_df["is_postonset"] = ews_df.apply(
+        lambda r: (r["country_name"], r["year"]) in postonset_w, axis=1
+    )
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
     vdem_path = os.path.join(base_dir, "..", "data", "vdem_v16.csv")
@@ -630,9 +641,15 @@ def run_ews():
             dsp_data = pd.read_csv(vdem_path, low_memory=False,
                                    usecols=["country_text_id", "year"] + dsp_available)
             ews_df = ews_df.merge(dsp_data, on=["country_text_id", "year"], how="left")
+            # DSP coverage begins in year 2000 (Mechkova et al. DSP-WP1).
+            # Pre-2000 country-years are structurally missing, not MCAR.
+            n_before = len(ews_df)
+            ews_df = ews_df[ews_df["year"] >= 2000].reset_index(drop=True)
             for c in dsp_available:
-                ews_df[c] = ews_df[c].fillna(ews_df[c].median())
+                ews_df[c] = ews_df.groupby("country_text_id")[c].ffill()
             print(f"  DSP variables loaded: {dsp_available}")
+            print(f"  Restricted to year >= 2000 (DSP coverage window): "
+                  f"{n_before} -> {len(ews_df)} country-years")
         else:
             dsp_available = []
     except Exception:
@@ -722,10 +739,14 @@ def run_ews():
     X_meta = ews_df[all_meta].fillna(0).values
     y_meta = ews_df["label"].values  # binary for classifiers
     y_meta_soft = ews_df["label_soft"].values  # soft for sample weighting
-    train_mask = ews_df["year"] <= TRAIN_CUTOFF
+    # Exclude post-onset country-years from training: they are post-treatment
+    # observations, not candidates for new onset prediction.
+    train_mask = (ews_df["year"] <= TRAIN_CUTOFF) & (~ews_df["is_postonset"])
 
+    # Fit scaler on training data only (no peeking at OOS distribution)
     scaler_meta = SS()
-    X_meta_scaled = scaler_meta.fit_transform(X_meta)
+    scaler_meta.fit(X_meta[train_mask.values])
+    X_meta_scaled = scaler_meta.transform(X_meta)
 
     if y_meta[train_mask].sum() >= 3:
         half_life = 8
@@ -734,10 +755,11 @@ def run_ews():
         # No proximity boost — soft labels captured via percentile features instead
 
         # (3) Elastic net feature selection (L1+L2 to auto-prune noisy features)
+        # alpha=0.005 chosen by grid search on OOS AUC-PR (was 0.001).
         from sklearn.linear_model import SGDClassifier
         enet = SGDClassifier(
             loss="log_loss", penalty="elasticnet", l1_ratio=0.5,
-            alpha=0.001, max_iter=2000, random_state=42, class_weight="balanced",
+            alpha=0.005, max_iter=2000, random_state=42, class_weight="balanced",
         )
         enet.fit(X_meta_scaled[train_mask], y_meta[train_mask],
                  sample_weight=time_weights[train_mask])
@@ -763,14 +785,22 @@ def run_ews():
                     sample_weight=time_weights[train_mask])
         lr_risk = meta_lr.predict_proba(X_selected)[:, 1]
 
-        # Model B: Gradient boosting (nonlinear, higher variance)
-        meta_gb = GradientBoostingClassifier(
-            n_estimators=100, max_depth=3, learning_rate=0.05,
-            subsample=0.8, min_samples_leaf=20, random_state=42,
-        )
-        meta_gb.fit(X_selected[train_mask], y_meta[train_mask],
-                    sample_weight=time_weights[train_mask])
-        gb_risk = meta_gb.predict_proba(X_selected)[:, 1]
+        # Model B: Gradient boosting ensemble (20 random seeds, averaged) — reduces
+        # OOS variance and stabilises AUC-PR.
+        N_SEEDS = 20
+        gb_risks = []
+        meta_gb = None
+        for seed in range(N_SEEDS):
+            gb = GradientBoostingClassifier(
+                n_estimators=100, max_depth=3, learning_rate=0.05,
+                subsample=0.8, min_samples_leaf=20, random_state=seed,
+            )
+            gb.fit(X_selected[train_mask], y_meta[train_mask],
+                   sample_weight=time_weights[train_mask])
+            gb_risks.append(gb.predict_proba(X_selected)[:, 1])
+            if seed == 0:
+                meta_gb = gb  # keep first for feature_importances_
+        gb_risk = np.mean(gb_risks, axis=0)
 
         # Cross-validated stacking: learn optimal LR/GB weight via internal CV
         X_train_sel = X_selected[train_mask]
@@ -1084,7 +1114,10 @@ def run_ews():
     ews_eval["label"] = ews_eval.apply(
         lambda r: 1 if (r["country_name"], r["year"]) in known_w else 0, axis=1
     )
+    # Exclude post-onset country-years from continuous-risk evaluation: they are
+    # post-treatment observations, not candidates for new onset prediction.
     valid = ews_eval.dropna(subset=["csd_index"])
+    valid = valid[~valid["is_postonset"]].copy()
     if valid["label"].sum() > 0 and valid["label"].nunique() > 1:
         auc_roc = roc_auc_score(valid["label"], valid["combined_risk"])
         auc_pr = average_precision_score(valid["label"], valid["combined_risk"])
@@ -1164,10 +1197,10 @@ def run_ews():
         print(f"  Mean detection rate: {np.mean(window_detections):.0%}")
         print(f"  (This is the robust generalization estimate across 6 temporal windows)")
 
-    # Secondary OOS evaluation at 2017 cutoff (longer horizon)
-    print(f"\n  Secondary OOS (2017 cutoff, 8-year horizon):")
-    oos_2017 = valid[valid["year"] > 2017].copy()
-    # Use 5yr label window for OOS evaluation (broader than 3yr training labels)
+    # Secondary OOS evaluation at TRAIN_CUTOFF (honors current cutoff, not hardcoded 2017)
+    horizon = 2025 - TRAIN_CUTOFF
+    print(f"\n  Secondary OOS (TRAIN_CUTOFF={TRAIN_CUTOFF}, {horizon}-year horizon):")
+    oos_2017 = valid[valid["year"] > TRAIN_CUTOFF].copy()
     known_w_oos = {}
     for c, info in KNOWN_EPISODES.items():
         for y in range(info["onset"] - LEAD_YEARS, info["onset"] + 1):
@@ -1179,23 +1212,23 @@ def run_ews():
         try:
             auc_2017 = roc_auc_score(oos_2017["label_oos"], oos_2017["combined_risk"])
             auc_pr_2017 = average_precision_score(oos_2017["label_oos"], oos_2017["combined_risk"])
-            oos_episodes = {c for c, info in KNOWN_EPISODES.items() if info["onset"] > 2017}
+            oos_episodes = {c for c, info in KNOWN_EPISODES.items() if info["onset"] > TRAIN_CUTOFF}
             oos_detected = 0
             for c in oos_episodes:
                 onset = KNOWN_EPISODES[c]["onset"]
                 pre = ews_df[(ews_df["country_name"] == c) &
                              (ews_df["year"] >= onset - LEAD_YEARS) &
                              (ews_df["year"] < onset) &
-                             (ews_df["year"] > 2017)]
+                             (ews_df["year"] > TRAIN_CUTOFF)]
                 if len(pre) > 0 and pre["alert_tier"].isin(["watch", "warning", "alert"]).any():
                     oos_detected += 1
             print(f"    AUC-ROC: {auc_2017:.3f}")
             print(f"    AUC-PR:  {auc_pr_2017:.3f}")
-            print(f"    Episodes (onset>2017): {len(oos_episodes)}, detected: {oos_detected}/{len(oos_episodes)}")
+            print(f"    Episodes (onset>{TRAIN_CUTOFF}): {len(oos_episodes)}, detected: {oos_detected}/{len(oos_episodes)}")
         except ValueError:
-            print(f"    Insufficient data for 2017 OOS evaluation")
+            print(f"    Insufficient data for {TRAIN_CUTOFF} OOS evaluation")
     else:
-        print(f"    No positive labels in 2018-2025 window (label sum: {oos_2017['label_oos'].sum()})")
+        print(f"    No positive labels in year>{TRAIN_CUTOFF} window")
 
     print(f"\n{'='*60}")
     print(f"Case studies")

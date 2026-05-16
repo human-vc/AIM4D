@@ -18,6 +18,7 @@ N_STATES = 5
 N_RESTARTS = 60
 DIRICHLET_DIAG = 50
 DIRICHLET_OFF = 2
+MAX_TRAIN_YEAR = 2019
 MIN_F1_MARGIN = 0.15
 STATE_LABELS = {
     0: "liberal_democracy",
@@ -125,25 +126,31 @@ def quantile_init(X_all, n_states=N_STATES):
     return means, np.array(covars)
 
 
-def regularize_transmat(P, n_states=N_STATES):
+def transmat_alpha(n_states=N_STATES):
     """
-    Asymmetric Dirichlet prior: consolidated democracies get much higher
-    self-transition probability (Svolik 2008, Epstein et al. 2006).
+    Asymmetric Dirichlet alpha matrix for the transition prior (Svolik 2008,
+    Epstein et al. 2006). Passed to hmmlearn's `transmat_prior` so the prior
+    actually constrains EM, not just the final transmat.
     """
-    # State-specific diagonal priors: democracy states are stickier
     diag_priors = {
-        0: 500,   # liberal_democracy: ~0.5% annual transition probability
-        1: 200,   # electoral_democracy: ~1% annual transition
+        0: 500,   # liberal_democracy: very sticky
+        1: 200,   # electoral_democracy: sticky
         2: DIRICHLET_DIAG,   # hybrid: standard
         3: DIRICHLET_DIAG,   # competitive_authoritarian: standard
-        4: 200,   # closed_authoritarian: also sticky
+        4: 200,   # closed_authoritarian: sticky
     }
-    alpha = np.full((n_states, n_states), DIRICHLET_OFF)
+    alpha = np.full((n_states, n_states), DIRICHLET_OFF, dtype=float)
     for i in range(n_states):
         alpha[i, i] = diag_priors.get(i, DIRICHLET_DIAG)
         for j in range(n_states):
             if abs(i - j) > 2:
                 alpha[i, j] = 0.1
+    return alpha
+
+
+def regularize_transmat(P, n_states=N_STATES):
+    """Post-hoc smoothing of fitted transmat with the same Dirichlet prior."""
+    alpha = transmat_alpha(n_states)
     counts = P * 100
     smoothed = counts + alpha
     smoothed /= smoothed.sum(axis=1, keepdims=True)
@@ -160,13 +167,23 @@ def fit_baseline_hmm(X_all, lengths, init_means, init_covars):
             init_transmat[i, i + 1] = 0.02
     init_transmat /= init_transmat.sum(axis=1, keepdims=True)
 
+    # Diagonal of each state's covariance; full covars are near-singular over
+    # the 8-dim factor+lag space because lag features are mechanically
+    # collinear with their parents (Agent C diagnosis).
+    init_covars_diag = np.array([np.diag(c) for c in init_covars])
+    init_covars_diag = np.maximum(init_covars_diag, 0.05)
+    alpha = transmat_alpha()
+
     best_model = None
     best_score = -np.inf
 
     for restart in range(N_RESTARTS):
         model = hmm.GaussianHMM(
             n_components=N_STATES,
-            covariance_type="full",
+            covariance_type="diag",
+            min_covar=0.05,
+            transmat_prior=alpha,
+            implementation="log",
             n_iter=500,
             tol=1e-5,
             random_state=restart,
@@ -176,7 +193,7 @@ def fit_baseline_hmm(X_all, lengths, init_means, init_covars):
         rng = np.random.RandomState(restart)
         scale = 0.1 if restart < N_RESTARTS // 2 else 0.3
         model.means_ = init_means + rng.randn(*init_means.shape) * scale if restart > 0 else init_means.copy()
-        model.covars_ = init_covars.copy()
+        model.covars_ = init_covars_diag.copy()
         perturbed = init_transmat + rng.dirichlet(np.ones(N_STATES) * 10, size=N_STATES) * 0.05 if restart > 0 else init_transmat.copy()
         perturbed /= perturbed.sum(axis=1, keepdims=True)
         model.transmat_ = perturbed
@@ -205,7 +222,8 @@ def fit_baseline_hmm(X_all, lengths, init_means, init_covars):
         print("  Fallback: unconstrained + reorder")
         for restart in range(N_RESTARTS):
             model = hmm.GaussianHMM(
-                n_components=N_STATES, covariance_type="full",
+                n_components=N_STATES, covariance_type="diag",
+                min_covar=0.05, transmat_prior=alpha, implementation="log",
                 n_iter=500, tol=1e-5, random_state=restart + 5000,
             )
             with warnings.catch_warnings():
@@ -235,11 +253,19 @@ def precompute_log_emissions(X_all, means, covars):
     d = X_all.shape[1]
     log_emit = np.zeros((N, K))
 
+    # covars may be (K, d) for diagonal or (K, d, d) for full
+    is_diag = covars.ndim == 2
+
     for k in range(K):
         diff = X_all - means[k]
-        sign, logdet = np.linalg.slogdet(covars[k])
-        cov_inv = np.linalg.inv(covars[k])
-        mahal = np.sum(diff @ cov_inv * diff, axis=1)
+        if is_diag:
+            var = np.maximum(covars[k], 1e-6)
+            logdet = np.sum(np.log(var))
+            mahal = np.sum((diff ** 2) / var, axis=1)
+        else:
+            sign, logdet = np.linalg.slogdet(covars[k])
+            cov_inv = np.linalg.inv(covars[k])
+            mahal = np.sum(diff @ cov_inv * diff, axis=1)
         log_emit[:, k] = -0.5 * (d * np.log(2 * np.pi) + logdet + mahal)
 
     return log_emit
@@ -502,10 +528,16 @@ def run_stage3():
     X_all, lengths, country_order = prepare_sequences(df, obs_cols)
     print(f"Panel: {len(country_order)} countries, {sum(lengths)} obs\n")
 
-    init_means, init_covars = quantile_init(X_all)
+    # Pre-cutoff slice for HMM and TVTP fitting (decode runs on full panel below).
+    df_train = df[df["year"] <= MAX_TRAIN_YEAR].copy()
+    X_train, lengths_train, country_order_train = prepare_sequences(df_train, obs_cols)
+    print(f"Training subset: year <= {MAX_TRAIN_YEAR}, "
+          f"{len(country_order_train)} countries, {sum(lengths_train)} obs\n")
+
+    init_means, init_covars = quantile_init(X_train)
 
     print(f"\nPhase 1: Baseline HMM (K-means init, no supervision)...")
-    baseline, base_score = fit_baseline_hmm(X_all, lengths, init_means, init_covars)
+    baseline, base_score = fit_baseline_hmm(X_train, lengths_train, init_means, init_covars)
 
     print(f"\nState means:")
     for s in range(N_STATES):
@@ -562,7 +594,8 @@ def run_stage3():
         all_cov_cols = ["gdp_pc", "gdp_growth", "urbanization", "resource_rents", "trade_openness",
                         "military_spending"] + gdelt_event_cols + [f"{gc}_lag1" for gc in gdelt_event_cols]
         available = [c for c in all_cov_cols if c in macro.columns]
-        selected_covs = lasso_select(baseline_state_df, macro, available)[:3]
+        baseline_state_df_train = baseline_state_df[baseline_state_df["year"] <= MAX_TRAIN_YEAR]
+        selected_covs = lasso_select(baseline_state_df_train, macro, available)[:3]
 
         gdelt_in_top3 = any(gc in selected_covs or f"{gc}_lag1" in selected_covs for gc in gdelt_event_cols)
         if not gdelt_in_top3:
@@ -603,7 +636,18 @@ def run_stage3():
                         Z[t] = macro_lookup.loc[key].values
                 Z_seqs.append(Z)
 
-            theta = fit_tvtp(emit_seqs, Z_seqs, baseline, len(selected_covs))
+            # Fit TVTP on pre-cutoff data only; decode uses full panel below.
+            emit_seqs_train = []
+            Z_seqs_train = []
+            for i, country in enumerate(country_order):
+                cdf = df[df["country_name"] == country].sort_values("year")
+                years_full = cdf["year"].values[-lengths[i]:]
+                n_pre = int((years_full <= MAX_TRAIN_YEAR).sum())
+                if n_pre >= 2:
+                    emit_seqs_train.append(emit_seqs[i][:n_pre])
+                    Z_seqs_train.append(Z_seqs[i][:n_pre])
+
+            theta = fit_tvtp(emit_seqs_train, Z_seqs_train, baseline, len(selected_covs))
 
             state_df, tvtp_ll = decode_all(
                 emit_seqs, Z_seqs, lengths, country_order, df, baseline, theta,

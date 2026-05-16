@@ -29,7 +29,7 @@ from sklearn.preprocessing import StandardScaler
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 OUT = os.path.dirname(os.path.abspath(__file__))
-TRAIN_CUTOFF = 2021
+TRAIN_CUTOFF = 2019
 LEAD_YEARS = 5
 RANDOM_STATE = 42
 
@@ -74,7 +74,10 @@ def evaluate(risk, df, y):
     auc = roc_auc_score(y[valid], risk[valid])
     ap = average_precision_score(y[valid], risk[valid])
 
-    oos = (df["year"] > 2017).values & valid
+    # Honor TRAIN_CUTOFF and exclude post-onset country-years if available
+    oos = (df["year"] > TRAIN_CUTOFF).values & valid
+    if "is_postonset" in df.columns:
+        oos = oos & (~df["is_postonset"].fillna(False).values)
     if oos.sum() > 10 and y[oos].sum() > 1:
         auc_oos = roc_auc_score(y[oos], risk[oos])
         ap_oos = average_precision_score(y[oos], risk[oos])
@@ -126,6 +129,8 @@ def main():
     sample_weight = np.exp(-np.log(2) * (max_year - df["year"].values) / 7.0)
 
     train_mask = (df["year"] <= TRAIN_CUTOFF).values
+    if "is_postonset" in df.columns:
+        train_mask = train_mask & (~df["is_postonset"].fillna(False).values)
 
     full_features = candidate_features(df)
     dsp_features = [c for c in full_features if is_dsp(c)]

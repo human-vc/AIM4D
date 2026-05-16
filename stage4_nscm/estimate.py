@@ -19,7 +19,7 @@ OUTCOME_DIM = 5
 HIDDEN_DIM = 32
 EPOCHS = 250
 LR = 3e-3
-TRAIN_CUTOFF = 2021
+TRAIN_CUTOFF = 2019
 
 
 def load_all_data():

@@ -91,6 +91,12 @@ KNOWN_EPISODES = {
     # Coups / closed-auth transitions
     "Gabon": {"onset": 2023, "peak": 2024, "type": "coup"},
     "Haiti": {"onset": 2022, "peak": 2024, "type": "coup"},
+    # === G2 additions: self-coups / executive-aggrandizement episodes
+    # (Marsteintredet & Malamud 2024 self-coups database; V-Dem v16 evidence)
+    "Cambodia": {"onset": 2017, "peak": 2024, "type": "backsliding"},        # Hun Sen dissolves CNRP
+    "Tajikistan": {"onset": 2016, "peak": 2024, "type": "backsliding"},      # Rahmon constitutional ref
+    "Saudi Arabia": {"onset": 2017, "peak": 2024, "type": "backsliding"},    # MbS power consolidation
+    "Uganda": {"onset": 2017, "peak": 2024, "type": "backsliding"},          # Museveni age-limit removal
 }
 
 
@@ -132,10 +138,18 @@ def load_residuals():
 
 
 def rolling_stats(series, window=WINDOW, min_w=MIN_WINDOW):
+    """
+    G8: Extended CSD indicators. Adds skewness and absolute-residual mean
+    on top of the original variance/AR(1)/kurtosis. Skewness is the
+    asymmetry of fluctuations, a well-attested pre-bifurcation signal
+    (Scheffer 2009 review).
+    """
     n = len(series)
     r_var = np.full(n, np.nan)
     r_ar1 = np.full(n, np.nan)
     r_kurt = np.full(n, np.nan)
+    r_skew = np.full(n, np.nan)
+    r_abs = np.full(n, np.nan)
 
     for t in range(min_w, n):
         start = max(0, t - window)
@@ -150,8 +164,10 @@ def rolling_stats(series, window=WINDOW, min_w=MIN_WINDOW):
             s = np.std(c, ddof=1)
             if s > 1e-10:
                 r_kurt[t] = np.mean(((c - m) / s) ** 4) - 3
+                r_skew[t] = np.mean(((c - m) / s) ** 3)
+        r_abs[t] = np.mean(np.abs(c - np.mean(c)))
 
-    return r_var, r_ar1, r_kurt
+    return r_var, r_ar1, r_kurt, r_skew, r_abs
 
 
 def country_z(values, years, baseline_end=BASELINE_END):
@@ -369,7 +385,7 @@ def run_ews():
         if len(cdf) < MIN_WINDOW + 2:
             continue
         for rc in resid_cols:
-            rv, _, _ = rolling_stats(cdf[rc].values)
+            rv, _, _, _, _ = rolling_stats(cdf[rc].values)
             tv = rv[np.array(cdf["year"].values) <= TRAIN_CUTOFF]
             all_train_vars.extend(tv[~np.isnan(tv)])
     abs_var_floor = np.percentile(all_train_vars, MIN_ABS_VAR_PCTL * 100)
@@ -384,16 +400,19 @@ def run_ews():
         cid = cdf["country_text_id"].iloc[0]
 
         factor_alerts = np.zeros(len(years), dtype=int)
-        best = {m: np.full(len(years), np.nan) for m in ["var_z", "ar1_z", "kurt_z", "var_tau", "ar1_tau"]}
+        best = {m: np.full(len(years), np.nan) for m in
+                ["var_z", "ar1_z", "kurt_z", "skew_z", "var_tau", "ar1_tau", "skew_tau"]}
         max_abs = np.full(len(years), np.nan)
 
         for rc in resid_cols:
-            rv, ra, rk = rolling_stats(cdf[rc].values)
+            rv, ra, rk, rs, rabs = rolling_stats(cdf[rc].values)  # G8: skew + abs added
             vz = country_z(rv, years)
             az = country_z(ra, years)
             kz = country_z(rk, years)
+            sz = country_z(rs, years)  # G8: skewness z-score
             vt = rolling_kendall(rv)
             at = rolling_kendall(ra)
+            st = rolling_kendall(rs)  # G8: skewness trend
 
             for t in range(len(years)):
                 above_floor = not np.isnan(rv[t]) and rv[t] > abs_var_floor
@@ -409,8 +428,10 @@ def run_ews():
                         factor_alerts[t] += 1
 
                 for m, v in [("var_z", vz[t]), ("ar1_z", az[t]), ("kurt_z", kz[t]),
+                             ("skew_z", sz[t]),  # G8
                              ("var_tau", vt[t] if t < len(vt) else np.nan),
-                             ("ar1_tau", at[t] if t < len(at) else np.nan)]:
+                             ("ar1_tau", at[t] if t < len(at) else np.nan),
+                             ("skew_tau", st[t] if t < len(st) else np.nan)]:  # G8
                     if np.isnan(best[m][t]) or (not np.isnan(v) and v > best[m][t]):
                         best[m][t] = v
                 if np.isnan(max_abs[t]) or (not np.isnan(rv[t]) and rv[t] > max_abs[t]):
@@ -471,7 +492,9 @@ def run_ews():
                 "country_name": country, "country_text_id": cid,
                 "year": int(years[t]),
                 "var_z": best["var_z"][t], "ar1_z": best["ar1_z"][t], "kurt_z": best["kurt_z"][t],
+                "skew_z": best["skew_z"][t],  # G8
                 "var_trend": best["var_tau"][t], "ar1_trend": best["ar1_tau"][t],
+                "skew_trend": best["skew_tau"][t],  # G8
                 "n_factors": factor_alerts[t], "csd_index": csd_idx[t],
                 "mv_csd_index": mv_csd_idx[t],
                 "dom_eig_z": eig_z[t], "xcorr_z": xcorr_z[t],
@@ -682,6 +705,55 @@ def run_ews():
     else:
         print(f"  F3 Archigos: archigos_features.csv not found; run data/download_archigos.py")
 
+    # G9: Change-point features (years since last polyarchy/libdem break)
+    cp_path = os.path.join(base_dir, "..", "data", "changepoints.csv")
+    cp_features = []
+    if os.path.exists(cp_path):
+        cp = pd.read_csv(cp_path)
+        cp_features = [c for c in cp.columns if c not in {"country_text_id", "year"}]
+        ews_df = ews_df.merge(cp, on=["country_text_id", "year"], how="left")
+        for f in cp_features:
+            ews_df[f] = ews_df.groupby("country_text_id")[f].ffill()
+            ews_df[f] = ews_df[f].fillna(99)
+        print(f"  G9 change-point features loaded: {cp_features}")
+    else:
+        print(f"  G9 change-points: changepoints.csv not found; run data/compute_changepoints.py")
+
+    # G5: Election-calendar features. Derived from V-Dem v2eltype_0..9
+    # (election-type-occurred-this-year indicators). Strictly causal because
+    # election schedules are public ex ante.
+    elec_calendar_features = []
+    try:
+        eltype_cols = [f"v2eltype_{i}" for i in range(10)]
+        elcols_avail = [c for c in eltype_cols if c in pd.read_csv(vdem_path, low_memory=False, nrows=1).columns]
+        if elcols_avail:
+            eldf = pd.read_csv(vdem_path, low_memory=False,
+                               usecols=["country_text_id", "year"] + elcols_avail)
+            # any election this year = any v2eltype is positive
+            eldf["election_any"] = (eldf[elcols_avail].fillna(0) > 0).any(axis=1).astype(int)
+            eldf = eldf.sort_values(["country_text_id", "year"])
+            # Years since last election (-1 if never)
+            def _years_since(g):
+                last = -9999
+                out = []
+                for y, ev in zip(g["year"].values, g["election_any"].values):
+                    if ev == 1:
+                        last = y
+                    out.append(y - last if last > -9999 else 99)
+                return pd.Series(out, index=g.index)
+            eldf["years_since_election"] = eldf.groupby("country_text_id", group_keys=False).apply(_years_since)
+            # Election within last 2 years
+            eldf["election_within_2yr"] = (eldf["years_since_election"] <= 2).astype(int)
+            elec_calendar_features = ["years_since_election", "election_within_2yr"]
+            ews_df = ews_df.merge(eldf[["country_text_id", "year"] + elec_calendar_features],
+                                  on=["country_text_id", "year"], how="left")
+            for f in elec_calendar_features:
+                ews_df[f] = ews_df.groupby("country_text_id")[f].ffill()
+                ews_df[f] = ews_df[f].fillna(99)
+            print(f"  G5 election calendar features loaded: {elec_calendar_features}")
+    except Exception as e:
+        print(f"  G5 election calendar: skipped ({e})")
+
     # Legacy OR-based alert (kept for backwards compatibility, NOT primary metric)
     ews_df["combined_alert_legacy"] = ews_df["ews_alert"] | ews_df["election_alert"] | ews_df["dem_vulnerability_alert"] | ews_df["military_threat_alert"]
 
@@ -774,6 +846,8 @@ def run_ews():
                      + pitf_features  # F5: infant mortality, inflation, food prod, ext debt, youth bulge
                      + diffusion_features  # F4: global PageRank backsliding exposure (Schmotz-Selvik 2025)
                      + archigos_features  # F3: leader tenure, irregular entry, military background
+                     + elec_calendar_features  # G5: years since/within election (NELDA-style, strict causal)
+                     + cp_features  # G9: change-point years-since-break per V-Dem polyarchy / libdem
                      + gdelt_features)
     available_base = [f for f in base_features if f in ews_df.columns]
 

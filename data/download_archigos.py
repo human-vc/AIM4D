@@ -30,37 +30,82 @@ DATA = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(DATA, "archigos_features.csv")
 RAW = os.path.join(DATA, "Archigos_4.1.txt")
 
-# Archigos v4.1 mirrors (Hein Goemans). The Rochester URL was retired in
-# 2024; we try a Dataverse mirror and a Harvard preservation copy.
+# Archigos v4.1 mirrors. URLs change; we try several. If none work, see
+# manual-download instructions at bottom of error message.
 ARCHIGOS_URLS = [
-    "https://dataverse.harvard.edu/api/access/datafile/4567836",  # Dataverse mirror
-    "https://www.prio.org/Global/upload/CSCW/Data/Archigos/Archigos_4.1.zip",
-    "https://web.archive.org/web/2023/https://www.rochester.edu/college/faculty/hgoemans/Archigos_4.1.txt",
+    # Harvard Dataverse mirrors (multiple file IDs for the Archigos study)
+    "https://dataverse.harvard.edu/api/access/datafile/:persistentId/?persistentId=doi:10.7910/DVN/PUOZWC/Archigos_4.1_Statav14.dta",
+    "https://dataverse.harvard.edu/api/access/datafile/4567836",
+    # Hein Goemans personal site (URLs change every few years)
+    "https://www.rochester.edu/college/faculty/hgoemans/Archigos_4.1.txt",
+    "https://www.sas.rochester.edu/psc/hgoemans/data/Archigos_4.1.txt",
+    "https://hgoemans.sas.rochester.edu/data/Archigos_4.1.txt",
+    # Wayback Machine archived copy (most reliable long-term)
+    "https://web.archive.org/web/2024*/https://www.rochester.edu/college/faculty/hgoemans/Archigos_4.1.txt",
+    "https://web.archive.org/web/2022if_/https://www.rochester.edu/college/faculty/hgoemans/Archigos_4.1.txt",
+    # PRIO archive
+    "https://www.prio.org/data/3/Archigos_4.1.zip",
 ]
 
 
 def download_archigos():
     if os.path.exists(RAW):
         return RAW
+    # Also accept a .dta or .csv at the standard path
+    for alt in [RAW.replace(".txt", ".dta"), RAW.replace(".txt", ".csv")]:
+        if os.path.exists(alt):
+            return alt
+    headers = {"User-Agent": "Mozilla/5.0 AIM4D-research"}
     for url in ARCHIGOS_URLS:
         try:
-            print(f"  trying {url} ...")
-            urllib.request.urlretrieve(url, RAW)
-            print(f"  downloaded to {RAW}")
-            return RAW
+            print(f"  trying {url[:80]} ...")
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+            # Save in original format
+            ext = ".dta" if url.endswith(".dta") else (".zip" if url.endswith(".zip") else ".txt")
+            target = RAW.replace(".txt", ext)
+            with open(target, "wb") as f:
+                f.write(data)
+            print(f"  downloaded {len(data)} bytes -> {target}")
+            return target
         except Exception as e:
-            print(f"    failed: {e}")
+            print(f"    failed: {type(e).__name__}: {str(e)[:100]}")
     raise FileNotFoundError(
-        f"Could not download Archigos v4.1. Please manually download from "
-        f"https://www.rochester.edu/college/faculty/hgoemans/data and place at {RAW}"
+        "Could not download Archigos v4.1 from any of the tried URLs.\n"
+        "MANUAL DOWNLOAD:\n"
+        "  1. Go to https://www.rochester.edu/college/gradstudents/jvogel/files/Archigos.html\n"
+        "     (or search 'Archigos Goemans dataset') and download Archigos_4.1.txt\n"
+        "  2. Place file at: " + RAW + "\n"
+        "  3. Re-run this script\n"
+        "Stage 5 will gracefully skip F3 if the file is absent."
     )
+
+
+def _read_archigos(path):
+    """Read Archigos file (.txt / .dta / .csv) and normalize column names."""
+    if path.endswith(".dta"):
+        df = pd.read_stata(path)
+    elif path.endswith(".zip"):
+        # extract single file from zip
+        with zipfile.ZipFile(path) as z:
+            names = [n for n in z.namelist() if n.endswith((".txt", ".dta", ".csv"))]
+            if not names:
+                raise RuntimeError(f"No usable file in {path}")
+            with z.open(names[0]) as f:
+                if names[0].endswith(".dta"):
+                    df = pd.read_stata(io.BytesIO(f.read()))
+                else:
+                    df = pd.read_csv(io.BytesIO(f.read()), sep="\t", encoding="latin-1", low_memory=False)
+    else:
+        df = pd.read_csv(path, sep="\t", encoding="latin-1", low_memory=False)
+    df.columns = [c.lower() for c in df.columns]
+    return df
 
 
 def build_features():
     path = download_archigos()
-    # Archigos is tab-delimited
-    df = pd.read_csv(path, sep="\t", encoding="latin-1", low_memory=False)
-    df.columns = [c.lower() for c in df.columns]
+    df = _read_archigos(path)
 
     # Expected columns: ccode, idacr (iso3-ish), leader, startdate, enddate,
     # entry, exit, prevtimesinoffice, posttenurefate, mil

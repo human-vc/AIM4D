@@ -1036,16 +1036,23 @@ def run_ews():
         print(f"  G6 RandomForest + ExtraTrees fitted")
 
         # G4: TabPFN-2.5 as fifth base learner (pretrained transformer for small
-        # tabular). Optional — install with `pip install tabpfn`.
+        # tabular). Opt-in via AIM4D_USE_TABPFN=1 because the recent TabPFN
+        # release requires interactive license acceptance / API key, which
+        # blocks headless runs. To enable: accept license at priorlabs.ai,
+        # export TABPFN_API_KEY=..., then set AIM4D_USE_TABPFN=1 and re-run.
         tab_risk = None
-        try:
-            from tabpfn import TabPFNClassifier
-            tab = TabPFNClassifier(device="cpu", ignore_pretraining_limits=True)
-            tab.fit(X_selected[train_mask], y_meta[train_mask])
-            tab_risk = tab.predict_proba(X_selected)[:, 1]
-            print(f"  G4 TabPFN fitted")
-        except Exception as e:
-            print(f"  G4 TabPFN: skipped ({type(e).__name__}: {str(e)[:80]})")
+        if os.environ.get("AIM4D_USE_TABPFN") == "1":
+            try:
+                from tabpfn import TabPFNClassifier
+                tab = TabPFNClassifier(device="cpu", ignore_pretraining_limits=True)
+                tab.fit(X_selected[train_mask], y_meta[train_mask])
+                tab_risk = tab.predict_proba(X_selected)[:, 1]
+                print(f"  G4 TabPFN fitted")
+            except Exception as e:
+                print(f"  G4 TabPFN: skipped ({type(e).__name__}: {str(e)[:80]})")
+        else:
+            print(f"  G4 TabPFN: skipped (set AIM4D_USE_TABPFN=1 to enable; "
+                  f"requires license acceptance at priorlabs.ai)")
 
         # Cross-validated stacking: learn optimal LR/GB weight via internal CV
         X_train_sel = X_selected[train_mask]

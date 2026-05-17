@@ -79,6 +79,18 @@ KNOWN_EPISODES = {
     "Mauritius": {"onset": 2017, "peak": 2023, "type": "backsliding"},
     "Belarus": {"onset": 1996, "peak": 2024, "type": "backsliding"},
     "Georgia": {"onset": 2024, "peak": 2025, "type": "backsliding"},
+    # === F1 additions from V-Dem ERT v15 / Democracy Report 2025 ===
+    # Lib-dem to elec-dem transitions documented in V-Dem v16 with 5y polyarchy decline >= 0.10
+    "Greece": {"onset": 2020, "peak": 2024, "type": "backsliding"},
+    "Botswana": {"onset": 2021, "peak": 2024, "type": "backsliding"},
+    "Slovenia": {"onset": 2021, "peak": 2024, "type": "backsliding"},
+    "South Korea": {"onset": 2024, "peak": 2025, "type": "backsliding"},
+    "Indonesia": {"onset": 2024, "peak": 2025, "type": "backsliding"},
+    "Mexico": {"onset": 2024, "peak": 2025, "type": "backsliding"},
+    "Mongolia": {"onset": 2024, "peak": 2025, "type": "backsliding"},
+    # Coups / closed-auth transitions
+    "Gabon": {"onset": 2023, "peak": 2024, "type": "coup"},
+    "Haiti": {"onset": 2022, "peak": 2024, "type": "coup"},
 }
 
 
@@ -618,6 +630,57 @@ def run_ews():
     except Exception:
         pass
 
+    # F5: PITF / IMF macro stress features (infant mortality, inflation,
+    # food production, external debt, youth bulge proxy). Goldstone 2010
+    # finds infant mortality is the single strongest non-V-Dem predictor.
+    pitf_path = os.path.join(base_dir, "..", "data", "macro_pitf.csv")
+    pitf_features = []
+    if os.path.exists(pitf_path):
+        pitf = pd.read_csv(pitf_path)
+        if "iso3" in pitf.columns:
+            pitf = pitf.rename(columns={"iso3": "country_text_id"})
+        pitf_features = [c for c in pitf.columns if c not in {"country_text_id", "year"}]
+        ews_df = ews_df.merge(pitf, on=["country_text_id", "year"], how="left")
+        for f in pitf_features:
+            ews_df[f] = ews_df.groupby("country_text_id")[f].ffill()
+            ews_df[f] = ews_df[f].fillna(ews_df[f].median())
+        print(f"  F5 PITF features loaded: {pitf_features}")
+    else:
+        print(f"  F5 PITF: macro_pitf.csv not found; run data/download_pitf.py to enable")
+
+    # F4: Global PageRank-weighted backsliding-exposure (Schmotz & Selvik 2025).
+    # Captures the "backsliding is global, not neighbor-only" finding.
+    diff_path = os.path.join(base_dir, "..", "data", "global_diffusion.csv")
+    diffusion_features = []
+    if os.path.exists(diff_path):
+        diff = pd.read_csv(diff_path)
+        diffusion_features = [c for c in diff.columns if c not in {"country_text_id", "year"}]
+        ews_df = ews_df.merge(diff, on=["country_text_id", "year"], how="left")
+        for f in diffusion_features:
+            ews_df[f] = ews_df.groupby("country_text_id")[f].ffill()
+            ews_df[f] = ews_df[f].fillna(0.0)
+        print(f"  F4 global diffusion features loaded: {diffusion_features}")
+    else:
+        print(f"  F4 global diffusion: global_diffusion.csv not found; run data/compute_global_diffusion.py")
+
+    # F3: Archigos leader features (Goemans, Gleditsch & Chiozza 2009).
+    # Tenure, irregular entry, military background — targets the 2021-23 coup
+    # cluster weakness (Beger, Dorff & Ward 2014 use these in CoupCast).
+    arch_path = os.path.join(base_dir, "..", "data", "archigos_features.csv")
+    archigos_features = []
+    if os.path.exists(arch_path):
+        arch = pd.read_csv(arch_path)
+        if "iso3" in arch.columns:
+            arch = arch.rename(columns={"iso3": "country_text_id"})
+        archigos_features = [c for c in arch.columns if c not in {"country_text_id", "year"}]
+        ews_df = ews_df.merge(arch, on=["country_text_id", "year"], how="left")
+        for f in archigos_features:
+            ews_df[f] = ews_df.groupby("country_text_id")[f].ffill()
+            ews_df[f] = ews_df[f].fillna(ews_df[f].median())
+        print(f"  F3 Archigos features loaded: {archigos_features}")
+    else:
+        print(f"  F3 Archigos: archigos_features.csv not found; run data/download_archigos.py")
+
     # Legacy OR-based alert (kept for backwards compatibility, NOT primary metric)
     ews_df["combined_alert_legacy"] = ews_df["ews_alert"] | ews_df["election_alert"] | ews_df["dem_vulnerability_alert"] | ews_df["military_threat_alert"]
 
@@ -650,12 +713,21 @@ def run_ews():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     vdem_path = os.path.join(base_dir, "..", "data", "vdem_v16.csv")
     dsp_cols = ["v2smgovdom", "v2smfordom", "v2smgovfilprc", "v2smgovsmmon", "v2smpardom"]
+    # F2: mobilization (Hellmeier & Bernhard 2023, CPS) and legitimation
+    # (V-Dem) features. Pro-autocratic mobilization and personalist
+    # legitimation are documented backsliding precursors with 3-7 year lead.
+    mob_cols = ["v2caautmob", "v2cademmob", "v2cagenmob", "v2caconmob"]
+    legit_cols = ["v2exl_legitideol", "v2exl_legitlead", "v2exl_legitperf", "v2exl_legitratio"]
+    vdem_extra_cols = dsp_cols + mob_cols + legit_cols
     try:
         vdem_avail = pd.read_csv(vdem_path, low_memory=False, nrows=1).columns
         dsp_available = [c for c in dsp_cols if c in vdem_avail]
+        mob_available = [c for c in mob_cols if c in vdem_avail]
+        legit_available = [c for c in legit_cols if c in vdem_avail]
+        vdem_extra_available = dsp_available + mob_available + legit_available
         if dsp_available:
             dsp_data = pd.read_csv(vdem_path, low_memory=False,
-                                   usecols=["country_text_id", "year"] + dsp_available)
+                                   usecols=["country_text_id", "year"] + vdem_extra_available)
             ews_df = ews_df.merge(dsp_data, on=["country_text_id", "year"], how="left")
             # DSP coverage begins in year 2000 (Mechkova et al. DSP-WP1).
             # Pre-2000 country-years are structurally missing, not MCAR.
@@ -663,7 +735,14 @@ def run_ews():
             ews_df = ews_df[ews_df["year"] >= 2000].reset_index(drop=True)
             for c in dsp_available:
                 ews_df[c] = ews_df.groupby("country_text_id")[c].ffill()
+            # Mobilization + legitimation: country-level forward-fill within country
+            # for any tiny gaps. These vars have broader temporal coverage than DSP.
+            for c in mob_available + legit_available:
+                ews_df[c] = ews_df.groupby("country_text_id")[c].ffill()
+                ews_df[c] = ews_df.groupby("country_text_id")[c].bfill()
             print(f"  DSP variables loaded: {dsp_available}")
+            print(f"  F2 mobilization features: {mob_available}")
+            print(f"  F2 legitimation features: {legit_available}")
             print(f"  Restricted to year >= 2000 (DSP coverage window): "
                   f"{n_before} -> {len(ews_df)} country-years")
         else:
@@ -686,8 +765,15 @@ def run_ews():
     ews_df = ews_df.drop_duplicates(subset=["country_text_id", "year"], keep="first").reset_index(drop=True)
 
     # --- Feature engineering for meta-learner ---
-    base_features = ["csd_index", "mv_csd_index", "election_vulnerability", "party_threat",
-                     "mil_zscore", "network_exposure", "csd_x_network"] + dsp_available + gdelt_features
+    base_features = (["csd_index", "mv_csd_index", "election_vulnerability", "party_threat",
+                      "mil_zscore", "network_exposure", "csd_x_network"]
+                     + dsp_available
+                     + mob_available  # F2: pro/anti-autocratic mobilization (Hellmeier-Bernhard 2023)
+                     + legit_available  # F2: personalist/performance/ideology legitimation
+                     + pitf_features  # F5: infant mortality, inflation, food prod, ext debt, youth bulge
+                     + diffusion_features  # F4: global PageRank backsliding exposure (Schmotz-Selvik 2025)
+                     + archigos_features  # F3: leader tenure, irregular entry, military background
+                     + gdelt_features)
     available_base = [f for f in base_features if f in ews_df.columns]
 
     # (1) Lagged features: 1yr and 2yr lags capture trends

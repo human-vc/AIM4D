@@ -14,7 +14,8 @@ EXCLUDE_SUFFIXES = (
     "_nr", "_mean", "_3C", "_4C", "_5C",
 )
 MIN_YEAR = 1970
-MAX_TRAIN_YEAR = 2019
+MAX_TRAIN_YEAR = int(os.environ.get("AIM4D_CUTOFF", "2019"))
+EXCLUDE_COUNTRY = os.environ.get("AIM4D_EXCLUDE_COUNTRY", "").strip() or None
 MAX_MISSING = 0.2
 ROW_THRESH = 0.8
 K_MAX = 20
@@ -194,9 +195,12 @@ def extract_factors(min_year=MIN_YEAR, max_train_year=MAX_TRAIN_YEAR, k_max=K_MA
     X, scaler = panel_to_matrix(panel, indicators)
 
     # Fit POET loadings only on pre-cutoff data; project post-cutoff country-years
-    # using those loadings. Honors the temporal hold-out: no post-2017 V-Dem rows
+    # using those loadings. Honors the temporal hold-out: no post-cutoff V-Dem rows
     # contribute to the latent factor structure.
     train_mask = panel["year"].values <= max_train_year
+    if EXCLUDE_COUNTRY:
+        train_mask = train_mask & (panel["country_name"].values != EXCLUDE_COUNTRY)
+        print(f"  Task F: excluding country '{EXCLUDE_COUNTRY}' from POET fit")
     X_train = X[train_mask]
     print(f"Fitting POET on {train_mask.sum()}/{len(X)} country-years "
           f"(year <= {max_train_year})")

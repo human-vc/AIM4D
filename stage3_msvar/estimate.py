@@ -18,7 +18,8 @@ N_STATES = 5
 N_RESTARTS = 60
 DIRICHLET_DIAG = 50
 DIRICHLET_OFF = 2
-MAX_TRAIN_YEAR = 2019
+MAX_TRAIN_YEAR = int(os.environ.get("AIM4D_CUTOFF", "2019"))
+EXCLUDE_COUNTRY = os.environ.get("AIM4D_EXCLUDE_COUNTRY", "").strip() or None
 MIN_F1_MARGIN = 0.15
 STATE_LABELS = {
     0: "liberal_democracy",
@@ -530,6 +531,9 @@ def run_stage3():
 
     # Pre-cutoff slice for HMM and TVTP fitting (decode runs on full panel below).
     df_train = df[df["year"] <= MAX_TRAIN_YEAR].copy()
+    if EXCLUDE_COUNTRY:
+        df_train = df_train[df_train["country_name"] != EXCLUDE_COUNTRY]
+        print(f"  Task F: excluding country '{EXCLUDE_COUNTRY}' from HMM/TVTP fit")
     X_train, lengths_train, country_order_train = prepare_sequences(df_train, obs_cols)
     print(f"Training subset: year <= {MAX_TRAIN_YEAR}, "
           f"{len(country_order_train)} countries, {sum(lengths_train)} obs\n")

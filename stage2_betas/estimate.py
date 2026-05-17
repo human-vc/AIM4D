@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 FACTOR_COLS = ["factor_1", "factor_2", "factor_3", "factor_4"]
 MIN_OBS = 30
-MAX_TRAIN_YEAR = 2019
+MAX_TRAIN_YEAR = int(os.environ.get("AIM4D_CUTOFF", "2019"))
 
 
 def load_factor_scores():

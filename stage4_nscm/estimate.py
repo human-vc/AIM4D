@@ -19,7 +19,8 @@ OUTCOME_DIM = 5
 HIDDEN_DIM = 32
 EPOCHS = 250
 LR = 3e-3
-TRAIN_CUTOFF = 2019
+TRAIN_CUTOFF = int(os.environ.get("AIM4D_CUTOFF", "2019"))
+EXCLUDE_COUNTRY = os.environ.get("AIM4D_EXCLUDE_COUNTRY", "").strip() or None
 
 
 def load_all_data():

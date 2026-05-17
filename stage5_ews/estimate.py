@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 WINDOW = 8
 MIN_WINDOW = 5
 BASELINE_END = 2005
-TRAIN_CUTOFF = 2019
+TRAIN_CUTOFF = int(os.environ.get("AIM4D_CUTOFF", "2019"))
+EXCLUDE_COUNTRY = os.environ.get("AIM4D_EXCLUDE_COUNTRY", "").strip() or None
 Z_THRESHOLD = 1.5
 Z_CAP = 10.0
 MIN_ABS_VAR_PCTL = 0.30
@@ -742,6 +743,9 @@ def run_ews():
     # Exclude post-onset country-years from training: they are post-treatment
     # observations, not candidates for new onset prediction.
     train_mask = (ews_df["year"] <= TRAIN_CUTOFF) & (~ews_df["is_postonset"])
+    if EXCLUDE_COUNTRY:
+        train_mask = train_mask & (ews_df["country_name"] != EXCLUDE_COUNTRY)
+        print(f"  Task F: excluding country '{EXCLUDE_COUNTRY}' from meta-learner training")
 
     # Fit scaler on training data only (no peeking at OOS distribution)
     scaler_meta = SS()

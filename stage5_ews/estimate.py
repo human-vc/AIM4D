@@ -15,15 +15,7 @@ Z_THRESHOLD = 1.5
 Z_CAP = 10.0
 MIN_ABS_VAR_PCTL = 0.30
 PERSISTENCE = 2
-LEAD_YEARS = 5            # default pre-onset window (backsliding)
-LEAD_YEARS_COUP = 3       # coup pre-event signal lives in last 1-3 years
-POS_WEIGHT = 3.0          # upweight positive labels in GB fitting
-SMOOTH_WINDOW = 3         # rolling-max smoothing window for tier detection
-
-
-def lead_for(info):
-    """Return type-appropriate pre-onset label window."""
-    return LEAD_YEARS_COUP if info.get("type") == "coup" else LEAD_YEARS
+LEAD_YEARS = 5
 N_SURROGATES = 50  # Reduced for speed; 200 for final paper runs
 KENDALL_SIG = 0.05
 
@@ -627,11 +619,11 @@ def run_ews():
     POSTONSET_EXCL_YEARS = 5  # exclude 5 post-onset years from train + eval
     for c, info in KNOWN_EPISODES.items():
         onset = info["onset"]
-        # Coup pre-event signal lives in last 1-3 years; backsliding spreads
-        # over 5. Stratified window per episode type.
-        lead = lead_for(info)
-        for y in range(onset - lead, onset + 1):
+        for y in range(onset - LEAD_YEARS, onset + 1):
             known_w[(c, y)] = True
+        # Country-years already inside an active autocratization episode are
+        # "post-treatment" observations and should not be evaluated as
+        # negatives (Goldstone 2010, ViEWS convention).
         for y in range(onset + 1, onset + 1 + POSTONSET_EXCL_YEARS):
             postonset_w[(c, y)] = True
 
@@ -732,13 +724,11 @@ def run_ews():
     all_meta = [f for f in all_meta if f in ews_df.columns]
 
     # (2b) Soft distance-weighted labels (exponential decay from onset)
-    # Years closer to onset get higher weight, captures proximity gradient.
-    # Stratified window per episode type (coup 3yr, backsliding 5yr).
+    # Years closer to onset get higher weight, captures proximity gradient
     label_decay = 2.0  # half-life in years
     known_w_soft = {}
     for c, info in KNOWN_EPISODES.items():
-        lead = lead_for(info)
-        for y in range(info["onset"] - lead, info["onset"] + 1):
+        for y in range(info["onset"] - LEAD_YEARS, info["onset"] + 1):
             dist = max(0, info["onset"] - y)
             known_w_soft[(c, y)] = np.exp(-dist / label_decay)
     ews_df["label_soft"] = ews_df.apply(
@@ -766,9 +756,7 @@ def run_ews():
         half_life = 8
         max_year = ews_df.loc[train_mask, "year"].max()
         time_weights = np.exp(-np.log(2) * (max_year - ews_df["year"].values) / half_life)
-        # Class-weighted: upweight positive labels (POS_WEIGHT x) to fight imbalance.
-        # Combines multiplicatively with time decay.
-        train_weights = time_weights * np.where(y_meta == 1, POS_WEIGHT, 1.0)
+        # No proximity boost — soft labels captured via percentile features instead
 
         # (3) Feature selection: use all features. Earlier elastic-net selection
         # (alpha=0.005) was costing ~0.07 OOS AUC vs all-features (per DSP
@@ -797,14 +785,14 @@ def run_ews():
         from sklearn.ensemble import GradientBoostingClassifier
         from sklearn.model_selection import StratifiedKFold
 
-        # Model A: Logistic regression (calibrated, low variance) — class-weighted
+        # Model A: Logistic regression (calibrated, low variance)
         meta_lr = LogisticRegressionCV(cv=3, scoring="average_precision", max_iter=1000, random_state=42)
         meta_lr.fit(X_selected[train_mask], y_meta[train_mask],
-                    sample_weight=train_weights[train_mask])
+                    sample_weight=time_weights[train_mask])
         lr_risk = meta_lr.predict_proba(X_selected)[:, 1]
 
         # Model B: Gradient boosting ensemble (20 random seeds, averaged) — reduces
-        # OOS variance and stabilises AUC-PR. Class-weighted: positives count POS_WEIGHT x.
+        # OOS variance and stabilises AUC-PR.
         N_SEEDS = 20
         gb_risks = []
         meta_gb = None
@@ -814,7 +802,7 @@ def run_ews():
                 subsample=0.8, min_samples_leaf=20, random_state=seed,
             )
             gb.fit(X_selected[train_mask], y_meta[train_mask],
-                   sample_weight=train_weights[train_mask])
+                   sample_weight=time_weights[train_mask])
             gb_risks.append(gb.predict_proba(X_selected)[:, 1])
             if seed == 0:
                 meta_gb = gb  # keep first for feature_importances_
@@ -823,7 +811,7 @@ def run_ews():
         # Cross-validated stacking: learn optimal LR/GB weight via internal CV
         X_train_sel = X_selected[train_mask]
         y_train = y_meta[train_mask]
-        w_train = train_weights[train_mask]  # time-decay × positive-class upweighting
+        w_train = time_weights[train_mask]
         n_cv_folds = 3
         oof_lr = np.zeros(X_train_sel.shape[0])
         oof_gb = np.zeros(X_train_sel.shape[0])
@@ -872,22 +860,12 @@ def run_ews():
             for feat, imp in sorted(gb_imp.items(), key=lambda x: -x[1])[:10]:
                 print(f"    {feat}: {imp:.4f}")
 
-        # Rolling-max smoothing: a country crosses a tier if its risk has been
-        # at-or-above the threshold in any of the last SMOOTH_WINDOW years.
-        # Catches countries with sustained-elevation pre-onset signal but
-        # noisy single-year scores.
-        ews_df = ews_df.sort_values(["country_text_id", "year"]).reset_index(drop=True)
-        ews_df["smoothed_risk"] = (
-            ews_df.groupby("country_text_id")["calibrated_risk"]
-            .transform(lambda s: s.rolling(SMOOTH_WINDOW, min_periods=1).max())
-        )
-
-        # Tiered alerts based on smoothed risk (thresholds from training distribution)
-        train_risks = ews_df.loc[train_mask, "smoothed_risk"]
+        # Tiered alerts based on calibrated risk
+        train_risks = ews_df.loc[train_mask, "calibrated_risk"]
         ews_df["alert_tier"] = "none"
-        ews_df.loc[ews_df["smoothed_risk"] >= train_risks.quantile(0.80), "alert_tier"] = "watch"
-        ews_df.loc[ews_df["smoothed_risk"] >= train_risks.quantile(0.95), "alert_tier"] = "warning"
-        ews_df.loc[ews_df["smoothed_risk"] >= train_risks.quantile(0.98), "alert_tier"] = "alert"
+        ews_df.loc[ews_df["calibrated_risk"] >= train_risks.quantile(0.80), "alert_tier"] = "watch"
+        ews_df.loc[ews_df["calibrated_risk"] >= train_risks.quantile(0.95), "alert_tier"] = "warning"
+        ews_df.loc[ews_df["calibrated_risk"] >= train_risks.quantile(0.98), "alert_tier"] = "alert"
 
         ews_df["combined_alert"] = ews_df["alert_tier"].isin(["warning", "alert"])
 
@@ -911,8 +889,7 @@ def run_ews():
 
     known_w = {}
     for c, info in KNOWN_EPISODES.items():
-        lead = lead_for(info)
-        for y in range(info["onset"] - lead, info["onset"] + 1):
+        for y in range(info["onset"] - LEAD_YEARS, info["onset"] + 1):
             known_w[(c, y)] = True
 
     # Episode detection by tier
@@ -920,9 +897,8 @@ def run_ews():
     total = 0
     for country, info in KNOWN_EPISODES.items():
         onset = info["onset"]
-        lead = lead_for(info)
         pre = ews_df[(ews_df["country_name"] == country) &
-                     (ews_df["year"] >= onset - lead) & (ews_df["year"] < onset)]
+                     (ews_df["year"] >= onset - LEAD_YEARS) & (ews_df["year"] < onset)]
         if len(pre) == 0:
             print(f"  {country} ({onset}): NO DATA")
             continue
@@ -954,20 +930,21 @@ def run_ews():
             print(f"  {country} ({info['type']} {onset}): MISSED (risk={max_risk:.3f})")
 
     # Cumulative detection by tier
-    def _cum(tiers):
-        n = 0
-        for c, info in KNOWN_EPISODES.items():
-            lead = lead_for(info)
-            sub = ews_df[(ews_df["country_name"] == c)
-                         & (ews_df["year"] >= info["onset"] - lead)
-                         & (ews_df["year"] < info["onset"])]
-            if len(sub) > 0 and sub["alert_tier"].isin(tiers).any():
-                n += 1
-        return n
-
-    cum_watch = _cum(["watch", "warning", "alert"])
-    cum_warning = _cum(["warning", "alert"])
-    cum_alert = _cum(["alert"])
+    cum_watch = sum(1 for c, info in KNOWN_EPISODES.items()
+                    if ews_df[(ews_df["country_name"] == c) &
+                              (ews_df["year"] >= info["onset"] - LEAD_YEARS) &
+                              (ews_df["year"] < info["onset"])]["alert_tier"].isin(["watch", "warning", "alert"]).any()
+                    and len(ews_df[(ews_df["country_name"] == c) & (ews_df["year"] >= info["onset"] - LEAD_YEARS)]) > 0)
+    cum_warning = sum(1 for c, info in KNOWN_EPISODES.items()
+                      if ews_df[(ews_df["country_name"] == c) &
+                                (ews_df["year"] >= info["onset"] - LEAD_YEARS) &
+                                (ews_df["year"] < info["onset"])]["alert_tier"].isin(["warning", "alert"]).any()
+                      and len(ews_df[(ews_df["country_name"] == c) & (ews_df["year"] >= info["onset"] - LEAD_YEARS)]) > 0)
+    cum_alert = sum(1 for c, info in KNOWN_EPISODES.items()
+                    if ews_df[(ews_df["country_name"] == c) &
+                              (ews_df["year"] >= info["onset"] - LEAD_YEARS) &
+                              (ews_df["year"] < info["onset"])]["alert_tier"].isin(["alert"]).any()
+                    and len(ews_df[(ews_df["country_name"] == c) & (ews_df["year"] >= info["onset"] - LEAD_YEARS)]) > 0)
 
     print(f"\n  Detection by tier (cumulative):")
     print(f"    Watch (top 20%):  {cum_watch}/{total}")
@@ -1027,9 +1004,8 @@ def run_ews():
     for held_out_country, held_out_info in KNOWN_EPISODES.items():
         held_out_onset = held_out_info["onset"]
 
-        held_lead_for_labels = lead_for(held_out_info)
         train_labels = ews_df["label"].copy()
-        for y in range(held_out_onset - held_lead_for_labels, held_out_onset + 1):
+        for y in range(held_out_onset - LEAD_YEARS, held_out_onset + 1):
             mask = (ews_df["country_name"] == held_out_country) & (ews_df["year"] == y)
             train_labels[mask] = 0
 
@@ -1041,24 +1017,19 @@ def run_ews():
             scaler_loeo = SS()
             X_scaled = scaler_loeo.fit_transform(X_loeo)
 
-            # LOEO weights: time decay × positive-class upweighting, same as main model
-            loeo_weights = time_weights * np.where(y_loeo == 1, POS_WEIGHT, 1.0)
-
             # Same stacked ensemble as main model
             loeo_lr = LogisticRegression(C=1.0, max_iter=1000, random_state=42)
             loeo_lr.fit(X_scaled[loeo_train], y_loeo[loeo_train],
-                        sample_weight=loeo_weights[loeo_train])
+                        sample_weight=time_weights[loeo_train])
             loeo_gb = GradientBoostingClassifier(
                 n_estimators=100, max_depth=3, learning_rate=0.05,
                 subsample=0.8, min_samples_leaf=20, random_state=42,
             )
             loeo_gb.fit(X_scaled[loeo_train], y_loeo[loeo_train],
-                        sample_weight=loeo_weights[loeo_train])
+                        sample_weight=time_weights[loeo_train])
 
-            # Use type-appropriate lead for the held-out episode's pre-onset window
-            held_lead = lead_for(held_out_info)
             pre = ews_df[(ews_df["country_name"] == held_out_country) &
-                         (ews_df["year"] >= held_out_onset - held_lead) &
+                         (ews_df["year"] >= held_out_onset - LEAD_YEARS) &
                          (ews_df["year"] < held_out_onset)]
 
             if len(pre) > 0:
@@ -1211,11 +1182,9 @@ def run_ews():
 
         n_detected = 0
         for ep_country in test_episodes:
-            ep_info = KNOWN_EPISODES[ep_country]
-            ep_onset = ep_info["onset"]
-            ep_lead = lead_for(ep_info)
+            ep_onset = KNOWN_EPISODES[ep_country]["onset"]
             ep_pre = ews_df[(ews_df["country_name"] == ep_country) &
-                            (ews_df["year"] >= ep_onset - ep_lead) &
+                            (ews_df["year"] >= ep_onset - LEAD_YEARS) &
                             (ews_df["year"] < ep_onset) &
                             (ews_df["year"] > train_end)]
             if len(ep_pre) > 0 and ep_pre["combined_alert"].any():
@@ -1240,8 +1209,7 @@ def run_ews():
     oos_2017 = valid[valid["year"] > TRAIN_CUTOFF].copy()
     known_w_oos = {}
     for c, info in KNOWN_EPISODES.items():
-        lead = lead_for(info)
-        for y in range(info["onset"] - lead, info["onset"] + 1):
+        for y in range(info["onset"] - LEAD_YEARS, info["onset"] + 1):
             known_w_oos[(c, y)] = True
     oos_2017["label_oos"] = oos_2017.apply(
         lambda r: 1 if (r["country_name"], r["year"]) in known_w_oos else 0, axis=1
@@ -1253,11 +1221,9 @@ def run_ews():
             oos_episodes = {c for c, info in KNOWN_EPISODES.items() if info["onset"] > TRAIN_CUTOFF}
             oos_detected = 0
             for c in oos_episodes:
-                info = KNOWN_EPISODES[c]
-                onset = info["onset"]
-                lead = lead_for(info)
+                onset = KNOWN_EPISODES[c]["onset"]
                 pre = ews_df[(ews_df["country_name"] == c) &
-                             (ews_df["year"] >= onset - lead) &
+                             (ews_df["year"] >= onset - LEAD_YEARS) &
                              (ews_df["year"] < onset) &
                              (ews_df["year"] > TRAIN_CUTOFF)]
                 if len(pre) > 0 and pre["alert_tier"].isin(["watch", "warning", "alert"]).any():

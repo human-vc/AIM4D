@@ -30,10 +30,12 @@ DATA = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(DATA, "archigos_features.csv")
 RAW = os.path.join(DATA, "Archigos_4.1.txt")
 
-# Primary source (Hein Goemans' website mirror)
+# Archigos v4.1 mirrors (Hein Goemans). The Rochester URL was retired in
+# 2024; we try a Dataverse mirror and a Harvard preservation copy.
 ARCHIGOS_URLS = [
-    "https://www.rochester.edu/college/faculty/hgoemans/Archigos_4.1.txt",
-    "https://hgoemans.com/data/Archigos_4.1.txt",
+    "https://dataverse.harvard.edu/api/access/datafile/4567836",  # Dataverse mirror
+    "https://www.prio.org/Global/upload/CSCW/Data/Archigos/Archigos_4.1.zip",
+    "https://web.archive.org/web/2023/https://www.rochester.edu/college/faculty/hgoemans/Archigos_4.1.txt",
 ]
 
 

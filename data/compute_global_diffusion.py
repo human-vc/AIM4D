@@ -102,7 +102,8 @@ def main():
     vdem["libdem_change"] = vdem.groupby("country_text_id")["v2x_libdem"].diff()
 
     iso_map = load_iso3_mapping()
-    cow_to_iso = dict(zip(iso_map["cow_code"], iso_map["iso3"]))
+    # Mapping CSV uses columns: country_text_id, COWcode
+    cow_to_iso = dict(zip(iso_map["COWcode"], iso_map["country_text_id"]))
 
     contig = load_contig_pairs()
     alliance = load_alliance_pairs()

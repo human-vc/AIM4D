@@ -70,7 +70,20 @@ def build_spatial_edges(mapping, countries_iso3):
                 pairs.add((countries_iso3.index(s2), countries_iso3.index(s1)))
         alliance_by_year[yr] = pairs
 
-    return contig_pairs, alliance_by_year
+    # Architectural addition: cultural / linguistic similarity edges. Loaded
+    # from data/cultural_pairs.csv (Inglehart-Welzel + Huntington + language
+    # family blocs). Edge type for shared cultural-linguistic context.
+    cultural_pairs = set()
+    cult_path = os.path.join(base_atop, "..", "data", "cultural_pairs.csv")
+    if os.path.exists(cult_path):
+        cult = pd.read_csv(cult_path)
+        for _, row in cult.iterrows():
+            a, b = row["iso3_a"], row["iso3_b"]
+            if a in countries_iso3 and b in countries_iso3:
+                cultural_pairs.add((countries_iso3.index(a), countries_iso3.index(b)))
+                cultural_pairs.add((countries_iso3.index(b), countries_iso3.index(a)))
+
+    return contig_pairs, alliance_by_year, cultural_pairs
 
 
 def neighbor_mean(values, src, dst, n_nodes):
@@ -86,7 +99,8 @@ def neighbor_mean(values, src, dst, n_nodes):
     return agg / deg.unsqueeze(-1)
 
 
-def build_spatiotemporal_graph(df, countries_iso3, years, contig_pairs, alliance_by_year, feature_cols):
+def build_spatiotemporal_graph(df, countries_iso3, years, contig_pairs, alliance_by_year,
+                                feature_cols, cultural_pairs=None):
     N = len(countries_iso3)
     T = len(years)
     total_nodes = N * T
@@ -122,11 +136,16 @@ def build_spatiotemporal_graph(df, countries_iso3, years, contig_pairs, alliance
     spatial_lag_contig = torch.zeros(total_nodes, TREATMENT_DIM)
     spatial_lag_alliance = torch.zeros(total_nodes, TREATMENT_DIM)
     spatial_lag_trade = torch.zeros(total_nodes, TREATMENT_DIM)
+    spatial_lag_cultural = torch.zeros(total_nodes, TREATMENT_DIM)
 
     contig_edges_src, contig_edges_dst = [], []
     alliance_edges_src, alliance_edges_dst = [], []
     trade_edges_src, trade_edges_dst = [], []
+    cultural_edges_src, cultural_edges_dst = [], []
     temporal_edges_src, temporal_edges_dst = [], []
+
+    if cultural_pairs is None:
+        cultural_pairs = set()
 
     for t, year in enumerate(years):
         offset = t * N
@@ -139,6 +158,10 @@ def build_spatiotemporal_graph(df, countries_iso3, years, contig_pairs, alliance
         for (i, j) in ally_pairs:
             alliance_edges_src.append(offset + i)
             alliance_edges_dst.append(offset + j)
+
+        for (i, j) in cultural_pairs:
+            cultural_edges_src.append(offset + i)
+            cultural_edges_dst.append(offset + j)
 
         gdp_vals = node_features[offset:offset + N, -2].numpy()
         log_gdp = np.log1p(np.abs(gdp_vals))
@@ -175,15 +198,22 @@ def build_spatiotemporal_graph(df, countries_iso3, years, contig_pairs, alliance
         t_dst = [d - offset for d in trade_edges_dst if offset <= d < offset + N]
         spatial_lag_trade[offset:offset + N] = neighbor_mean(treat_lag, t_src, t_dst, N)
 
+        cult_src = [i for i, j in cultural_pairs]
+        cult_dst = [j for i, j in cultural_pairs]
+        spatial_lag_cultural[offset:offset + N] = neighbor_mean(treat_lag, cult_src, cult_dst, N)
+
     node_features_aug = torch.cat([
         node_features,
         spatial_lag_contig,
         spatial_lag_alliance,
         spatial_lag_trade,
+        spatial_lag_cultural,
     ], dim=-1)
 
-    all_spatial_src = contig_edges_src + alliance_edges_src + trade_edges_src
-    all_spatial_dst = contig_edges_dst + alliance_edges_dst + trade_edges_dst
+    all_spatial_src = (contig_edges_src + alliance_edges_src
+                       + trade_edges_src + cultural_edges_src)
+    all_spatial_dst = (contig_edges_dst + alliance_edges_dst
+                       + trade_edges_dst + cultural_edges_dst)
     all_src = all_spatial_src + temporal_edges_src
     all_dst = all_spatial_dst + temporal_edges_dst
 
@@ -197,7 +227,8 @@ def build_spatiotemporal_graph(df, countries_iso3, years, contig_pairs, alliance
     print(f"  Spatio-temporal graph: {total_nodes} nodes, "
           f"{edge_index.shape[1]} edges ({n_spatial} spatial, {n_temporal} temporal)")
     print(f"  Augmented features: {node_features_aug.shape[1]} "
-          f"(raw {len(feature_cols)} + spatial lags {TREATMENT_DIM * 3})")
+          f"(raw {len(feature_cols)} + spatial lags {TREATMENT_DIM * 4})  "
+          f"[contig + alliance + trade + cultural]")
 
     return (node_features_aug, node_outcomes, edge_index, spatial_edge_index, temporal_edge_index,
             node_mask_train, node_mask_test, node_country, node_year, N, T)
@@ -227,14 +258,17 @@ class HeterogeneousExposure(nn.Module):
 
 
 class INETARNet(nn.Module):
-    def __init__(self, in_dim, hidden=HIDDEN_DIM, treatment_dim=TREATMENT_DIM, outcome_dim=OUTCOME_DIM):
+    def __init__(self, in_dim, hidden=HIDDEN_DIM, treatment_dim=TREATMENT_DIM, outcome_dim=OUTCOME_DIM,
+                 n_edge_types=4):
         super().__init__()
         self.treatment_dim = treatment_dim
-        self.spatial_lag_dim = treatment_dim * 3
+        self.n_edge_types = n_edge_types
+        self.spatial_lag_dim = treatment_dim * n_edge_types
 
-        # Learned convex W combination (Neumayer & Plumper 2016, LeSage & Pace 2014)
-        # Raw logits → softmax gives α_contig, α_alliance, α_trade
-        self.w_logits = nn.Parameter(torch.zeros(3))
+        # Learned convex W combination (Neumayer & Plumper 2016, LeSage & Pace 2014).
+        # Raw logits → softmax gives one weight per edge type.
+        # Default 4 edge types: contiguity, alliance, trade, cultural.
+        self.w_logits = nn.Parameter(torch.zeros(n_edge_types))
 
         self.ego_encoder = nn.Sequential(
             nn.Linear(in_dim, hidden), nn.ELU(),
@@ -268,16 +302,23 @@ class INETARNet(nn.Module):
         return F.softmax(self.w_logits, dim=0)
 
     def apply_learned_w(self, x):
-        """Reweight the three spatial lag blocks using learned α weights."""
+        """Reweight the spatial-lag blocks using learned α weights.
+
+        Generalized to n_edge_types: each lag block contributes alpha[k] * lag_k
+        to the weighted composite, which is then replicated n_edge_types times
+        to preserve input dimensionality (the GCN downstream expects the same
+        feature width as before).
+        """
         alpha = self.get_w_weights()
         base_dim = x.shape[1] - self.spatial_lag_dim
         x_base = x[:, :base_dim]
-        lag_contig = x[:, base_dim:base_dim + self.treatment_dim]
-        lag_alliance = x[:, base_dim + self.treatment_dim:base_dim + 2 * self.treatment_dim]
-        lag_trade = x[:, base_dim + 2 * self.treatment_dim:base_dim + 3 * self.treatment_dim]
-        weighted_lag = alpha[0] * lag_contig + alpha[1] * lag_alliance + alpha[2] * lag_trade
-        # Concatenate weighted composite lag (replicated 3x to preserve input dim)
-        return torch.cat([x_base, weighted_lag, weighted_lag, weighted_lag], dim=-1)
+        n_e = self.n_edge_types
+        weighted_lag = torch.zeros(x.shape[0], self.treatment_dim, device=x.device)
+        for k in range(n_e):
+            block = x[:, base_dim + k * self.treatment_dim:base_dim + (k + 1) * self.treatment_dim]
+            weighted_lag = weighted_lag + alpha[k] * block
+        # Replicate to preserve input dim
+        return torch.cat([x_base] + [weighted_lag] * n_e, dim=-1)
 
     def encode(self, x, edge_index):
         x_weighted = self.apply_learned_w(x)
@@ -420,13 +461,16 @@ def run_stage4(seed=42, write_outputs=True):
     print(f"Countries: {len(countries_iso3)}, Years: {years_use[0]}-{years_use[-1]}")
 
     print(f"\nBuilding spatial edges...")
-    contig_pairs, alliance_by_year = build_spatial_edges(mapping, countries_iso3)
-    print(f"  Contiguity pairs: {len(contig_pairs)}, Alliance pairs (2020): {len(alliance_by_year.get(2020, set()))}")
+    contig_pairs, alliance_by_year, cultural_pairs = build_spatial_edges(mapping, countries_iso3)
+    print(f"  Contiguity pairs: {len(contig_pairs)}, "
+          f"Alliance pairs (2020): {len(alliance_by_year.get(2020, set()))}, "
+          f"Cultural pairs: {len(cultural_pairs)}")
 
     print(f"\nBuilding spatio-temporal graph...")
     (x, y, edge_index, spatial_ei, temporal_ei,
      mask_train, mask_test, node_country, node_year, N, T) = \
-        build_spatiotemporal_graph(df, countries_iso3, years_use, contig_pairs, alliance_by_year, feature_cols)
+        build_spatiotemporal_graph(df, countries_iso3, years_use, contig_pairs, alliance_by_year,
+                                    feature_cols, cultural_pairs=cultural_pairs)
 
     in_dim = x.shape[1]
     print(f"  Train nodes: {mask_train.sum()}, Test nodes: {mask_test.sum()}")
@@ -434,9 +478,9 @@ def run_stage4(seed=42, write_outputs=True):
     print(f"\nTraining INE-TARNet on spatio-temporal graph...")
     model = train_model(x, y, edge_index, mask_train, mask_test, in_dim, seed=seed)
 
-    # Report learned W weights
+    # Report learned W weights (one per edge type)
     w_weights = model.get_w_weights().detach().numpy()
-    w_names = ["contiguity", "alliance", "trade"]
+    w_names = ["contiguity", "alliance", "trade", "cultural"][:len(w_weights)]
     print(f"\n  Learned convex W weights (Neumayer & Plumper 2016):")
     for name, w in zip(w_names, w_weights):
         print(f"    α_{name}: {w:.3f}")

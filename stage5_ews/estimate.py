@@ -739,31 +739,51 @@ def run_ews():
     # G5: Election-calendar features. Derived from V-Dem v2eltype_0..9
     # (election-type-occurred-this-year indicators). Strictly causal because
     # election schedules are public ex ante.
+    # Built from scratch in a fresh DataFrame to avoid fragmentation issues
+    # with in-place column assignment that some pandas versions surface as
+    # "Column not found" KeyError.
     elec_calendar_features = []
     try:
         eltype_cols = [f"v2eltype_{i}" for i in range(10)]
-        elcols_avail = [c for c in eltype_cols if c in pd.read_csv(vdem_path, low_memory=False, nrows=1).columns]
+        vdem_cols = pd.read_csv(vdem_path, low_memory=False, nrows=1).columns.tolist()
+        elcols_avail = [c for c in eltype_cols if c in vdem_cols]
         if elcols_avail:
-            eldf = pd.read_csv(vdem_path, low_memory=False,
-                               usecols=["country_text_id", "year"] + elcols_avail)
-            # any election this year = any v2eltype is positive
-            eldf["election_any"] = (eldf[elcols_avail].fillna(0) > 0).any(axis=1).astype(int)
-            eldf = eldf.sort_values(["country_text_id", "year"]).reset_index(drop=True)
-            # Vectorized: years since last election, per country, via forward-fill
-            eldf["_elec_year"] = eldf["year"].where(eldf["election_any"] == 1)
-            eldf["_last_elec"] = eldf.groupby("country_text_id")["_elec_year"].ffill()
-            eldf["years_since_election"] = (eldf["year"] - eldf["_last_elec"]).fillna(99).astype(int)
-            eldf["election_within_2yr"] = (eldf["years_since_election"] <= 2).astype(int)
-            eldf = eldf.drop(columns=["_elec_year", "_last_elec"])
+            raw = pd.read_csv(vdem_path, low_memory=False,
+                              usecols=["country_text_id", "year"] + elcols_avail)
+            raw = raw.dropna(subset=["country_text_id", "year"])
+            raw = raw.sort_values(["country_text_id", "year"]).reset_index(drop=True)
+            election_any = (raw[elcols_avail].fillna(0) > 0).any(axis=1).astype(int).to_numpy()
+
+            # Per-country forward iteration to compute years-since-last-election.
+            countries = raw["country_text_id"].to_numpy()
+            years = raw["year"].astype(int).to_numpy()
+            yse_arr = np.full(len(raw), 99, dtype=int)
+            last_country = None
+            last_elec_year = -9999
+            for i in range(len(raw)):
+                c = countries[i]
+                if c != last_country:
+                    last_country = c
+                    last_elec_year = -9999
+                if election_any[i] == 1:
+                    last_elec_year = int(years[i])
+                if last_elec_year > -9999:
+                    yse_arr[i] = int(years[i]) - last_elec_year
+
+            eldf = pd.DataFrame({
+                "country_text_id": countries,
+                "year": years,
+                "years_since_election": yse_arr,
+                "election_within_2yr": (yse_arr <= 2).astype(int),
+            })
             elec_calendar_features = ["years_since_election", "election_within_2yr"]
-            ews_df = ews_df.merge(eldf[["country_text_id", "year"] + elec_calendar_features],
-                                  on=["country_text_id", "year"], how="left")
+            ews_df = ews_df.merge(eldf, on=["country_text_id", "year"], how="left")
             for f in elec_calendar_features:
                 ews_df[f] = ews_df.groupby("country_text_id")[f].ffill()
                 ews_df[f] = ews_df[f].fillna(99)
             print(f"  G5 election calendar features loaded: {elec_calendar_features}")
     except Exception as e:
-        print(f"  G5 election calendar: skipped ({e})")
+        print(f"  G5 election calendar: skipped ({type(e).__name__}: {e})")
 
     # Legacy OR-based alert (kept for backwards compatibility, NOT primary metric)
     ews_df["combined_alert_legacy"] = ews_df["ews_alert"] | ews_df["election_alert"] | ews_df["dem_vulnerability_alert"] | ews_df["military_threat_alert"]

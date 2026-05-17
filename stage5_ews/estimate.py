@@ -633,6 +633,7 @@ def run_ews():
     # F5: PITF / IMF macro stress features (infant mortality, inflation,
     # food production, external debt, youth bulge proxy). Goldstone 2010
     # finds infant mortality is the single strongest non-V-Dem predictor.
+    base_dir = os.path.dirname(os.path.abspath(__file__))  # also defined later for V-Dem merge
     pitf_path = os.path.join(base_dir, "..", "data", "macro_pitf.csv")
     pitf_features = []
     if os.path.exists(pitf_path):

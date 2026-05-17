@@ -770,25 +770,18 @@ def run_ews():
                 if last_elec_year > -9999:
                     yse_arr[i] = int(years[i]) - last_elec_year
 
-            eldf = pd.DataFrame({
-                "country_text_id": pd.Series(countries, dtype="object"),
-                "year": pd.Series(years, dtype="int64"),
-                "years_since_election": pd.Series(yse_arr, dtype="int64"),
-                "election_within_2yr": pd.Series((yse_arr <= 2).astype(int), dtype="int64"),
-            })
-            # Normalise ews_df merge-key dtypes to avoid mismatch
-            ews_df["country_text_id"] = ews_df["country_text_id"].astype("object")
-            ews_df["year"] = ews_df["year"].astype("int64")
-            ews_df = ews_df.merge(eldf, on=["country_text_id", "year"], how="left")
-            # Direct fillna (no groupby) — eldf already has full coverage where data exists
-            if "years_since_election" in ews_df.columns:
-                ews_df["years_since_election"] = ews_df["years_since_election"].fillna(99).astype(int)
-                ews_df["election_within_2yr"] = ews_df["election_within_2yr"].fillna(0).astype(int)
-                elec_calendar_features = ["years_since_election", "election_within_2yr"]
-                print(f"  G5 election calendar features loaded: {elec_calendar_features}")
-            else:
-                print(f"  G5 election calendar: merge produced no new columns "
-                      f"(ews_df cols after merge: {[c for c in ews_df.columns if 'elec' in c.lower()]})")
+            # Dict lookup instead of merge to avoid pandas merge/dtype issues
+            # that have plagued every prior version of this block on Brev.
+            yse_lookup = {(str(c), int(y)): int(v)
+                          for c, y, v in zip(countries, years, yse_arr)}
+            ews_keys = list(zip(ews_df["country_text_id"].astype(str).values,
+                                 ews_df["year"].astype(int).values))
+            yse_values = np.array([yse_lookup.get(k, 99) for k in ews_keys], dtype=int)
+            ews_df["years_since_election"] = yse_values
+            ews_df["election_within_2yr"] = (yse_values <= 2).astype(int)
+            elec_calendar_features = ["years_since_election", "election_within_2yr"]
+            print(f"  G5 election calendar features loaded: {elec_calendar_features} "
+                  f"(via dict lookup; {sum(v != 99 for v in yse_values)} country-years matched)")
     except Exception as e:
         print(f"  G5 election calendar: skipped ({type(e).__name__}: {e})")
 

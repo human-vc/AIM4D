@@ -748,19 +748,13 @@ def run_ews():
                                usecols=["country_text_id", "year"] + elcols_avail)
             # any election this year = any v2eltype is positive
             eldf["election_any"] = (eldf[elcols_avail].fillna(0) > 0).any(axis=1).astype(int)
-            eldf = eldf.sort_values(["country_text_id", "year"])
-            # Years since last election (-1 if never)
-            def _years_since(g):
-                last = -9999
-                out = []
-                for y, ev in zip(g["year"].values, g["election_any"].values):
-                    if ev == 1:
-                        last = y
-                    out.append(y - last if last > -9999 else 99)
-                return pd.Series(out, index=g.index)
-            eldf["years_since_election"] = eldf.groupby("country_text_id", group_keys=False).apply(_years_since)
-            # Election within last 2 years
+            eldf = eldf.sort_values(["country_text_id", "year"]).reset_index(drop=True)
+            # Vectorized: years since last election, per country, via forward-fill
+            eldf["_elec_year"] = eldf["year"].where(eldf["election_any"] == 1)
+            eldf["_last_elec"] = eldf.groupby("country_text_id")["_elec_year"].ffill()
+            eldf["years_since_election"] = (eldf["year"] - eldf["_last_elec"]).fillna(99).astype(int)
             eldf["election_within_2yr"] = (eldf["years_since_election"] <= 2).astype(int)
+            eldf = eldf.drop(columns=["_elec_year", "_last_elec"])
             elec_calendar_features = ["years_since_election", "election_within_2yr"]
             ews_df = ews_df.merge(eldf[["country_text_id", "year"] + elec_calendar_features],
                                   on=["country_text_id", "year"], how="left")

@@ -771,17 +771,24 @@ def run_ews():
                     yse_arr[i] = int(years[i]) - last_elec_year
 
             eldf = pd.DataFrame({
-                "country_text_id": countries,
-                "year": years,
-                "years_since_election": yse_arr,
-                "election_within_2yr": (yse_arr <= 2).astype(int),
+                "country_text_id": pd.Series(countries, dtype="object"),
+                "year": pd.Series(years, dtype="int64"),
+                "years_since_election": pd.Series(yse_arr, dtype="int64"),
+                "election_within_2yr": pd.Series((yse_arr <= 2).astype(int), dtype="int64"),
             })
-            elec_calendar_features = ["years_since_election", "election_within_2yr"]
+            # Normalise ews_df merge-key dtypes to avoid mismatch
+            ews_df["country_text_id"] = ews_df["country_text_id"].astype("object")
+            ews_df["year"] = ews_df["year"].astype("int64")
             ews_df = ews_df.merge(eldf, on=["country_text_id", "year"], how="left")
-            for f in elec_calendar_features:
-                ews_df[f] = ews_df.groupby("country_text_id")[f].ffill()
-                ews_df[f] = ews_df[f].fillna(99)
-            print(f"  G5 election calendar features loaded: {elec_calendar_features}")
+            # Direct fillna (no groupby) — eldf already has full coverage where data exists
+            if "years_since_election" in ews_df.columns:
+                ews_df["years_since_election"] = ews_df["years_since_election"].fillna(99).astype(int)
+                ews_df["election_within_2yr"] = ews_df["election_within_2yr"].fillna(0).astype(int)
+                elec_calendar_features = ["years_since_election", "election_within_2yr"]
+                print(f"  G5 election calendar features loaded: {elec_calendar_features}")
+            else:
+                print(f"  G5 election calendar: merge produced no new columns "
+                      f"(ews_df cols after merge: {[c for c in ews_df.columns if 'elec' in c.lower()]})")
     except Exception as e:
         print(f"  G5 election calendar: skipped ({type(e).__name__}: {e})")
 

@@ -295,8 +295,15 @@ def run_network_variants():
 
     summary.to_csv(os.path.join(OUTPUT_DIR, "network_variants_results.csv"), index=False)
     corr_matrix.to_csv(os.path.join(OUTPUT_DIR, "network_rank_correlations.csv"))
+
+    # Per-country, per-edge-type contagion table (arch addition)
+    per_country = pd.DataFrame(all_country_scores)
+    per_country.index.name = "country_text_id"
+    per_country.to_csv(os.path.join(OUTPUT_DIR, "contagion_by_edge_type.csv"))
+
     print(f"\nSaved to robustness/network_variants_results.csv")
     print(f"Saved to robustness/network_rank_correlations.csv")
+    print(f"Saved to robustness/contagion_by_edge_type.csv (per-country contagion by edge type)")
 
     return summary, corr_matrix
 

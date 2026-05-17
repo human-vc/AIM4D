@@ -705,6 +705,22 @@ def run_ews():
     else:
         print(f"  F3 Archigos: archigos_features.csv not found; run data/download_archigos.py")
 
+    # G7: catch22 recurrent time-series features (Lubba et al. 2019)
+    # per country trajectory: 22 stats over rolling 10-yr window on
+    # v2x_polyarchy + v2x_libdem.
+    c22_path = os.path.join(base_dir, "..", "data", "catch22_features.csv")
+    c22_features = []
+    if os.path.exists(c22_path):
+        c22 = pd.read_csv(c22_path)
+        c22_features = [c for c in c22.columns if c not in {"country_text_id", "year"}]
+        ews_df = ews_df.merge(c22, on=["country_text_id", "year"], how="left")
+        for f in c22_features:
+            ews_df[f] = ews_df.groupby("country_text_id")[f].ffill()
+            ews_df[f] = ews_df[f].fillna(0.0)
+        print(f"  G7 catch22 features loaded: {len(c22_features)} features")
+    else:
+        print(f"  G7 catch22: catch22_features.csv not found; run data/compute_catch22.py")
+
     # G9: Change-point features (years since last polyarchy/libdem break)
     cp_path = os.path.join(base_dir, "..", "data", "changepoints.csv")
     cp_features = []
@@ -848,6 +864,7 @@ def run_ews():
                      + archigos_features  # F3: leader tenure, irregular entry, military background
                      + elec_calendar_features  # G5: years since/within election (NELDA-style, strict causal)
                      + cp_features  # G9: change-point years-since-break per V-Dem polyarchy / libdem
+                     + c22_features  # G7: catch22 rolling-window time-series statistics
                      + gdelt_features)
     available_base = [f for f in base_features if f in ews_df.columns]
 
@@ -988,6 +1005,53 @@ def run_ews():
                 meta_gb = gb  # keep first for feature_importances_
         gb_risk = np.mean(gb_risks, axis=0)
 
+        # G3: CatBoost as third base learner. Better small-N regularization
+        # than sklearn GB; ordered boosting reduces target leakage.
+        cb_risk = None
+        try:
+            from catboost import CatBoostClassifier
+            cb = CatBoostClassifier(
+                iterations=1500, depth=5, learning_rate=0.03,
+                l2_leaf_reg=5, bootstrap_type="Bayesian",
+                bagging_temperature=1.0, auto_class_weights="SqrtBalanced",
+                random_seed=42, verbose=0, allow_writing_files=False,
+            )
+            cb.fit(X_selected[train_mask], y_meta[train_mask],
+                   sample_weight=train_weights[train_mask])
+            cb_risk = cb.predict_proba(X_selected)[:, 1]
+            print(f"  G3 CatBoost fitted (depth=5, iterations=1500)")
+        except Exception as e:
+            print(f"  G3 CatBoost: skipped ({type(e).__name__}: {e})")
+
+        # G6: Diverse base learners — RandomForest + ExtraTrees for orthogonal
+        # error structure relative to GB family. Helps stacked ensemble.
+        from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+        rf = RandomForestClassifier(n_estimators=500, max_depth=10,
+                                    min_samples_leaf=10, class_weight="balanced",
+                                    random_state=42, n_jobs=-1)
+        rf.fit(X_selected[train_mask], y_meta[train_mask],
+               sample_weight=train_weights[train_mask])
+        rf_risk = rf.predict_proba(X_selected)[:, 1]
+        et = ExtraTreesClassifier(n_estimators=500, max_depth=10,
+                                  min_samples_leaf=10, class_weight="balanced",
+                                  random_state=42, n_jobs=-1)
+        et.fit(X_selected[train_mask], y_meta[train_mask],
+               sample_weight=train_weights[train_mask])
+        et_risk = et.predict_proba(X_selected)[:, 1]
+        print(f"  G6 RandomForest + ExtraTrees fitted")
+
+        # G4: TabPFN-2.5 as fifth base learner (pretrained transformer for small
+        # tabular). Optional — install with `pip install tabpfn`.
+        tab_risk = None
+        try:
+            from tabpfn import TabPFNClassifier
+            tab = TabPFNClassifier(device="cpu", ignore_pretraining_limits=True)
+            tab.fit(X_selected[train_mask], y_meta[train_mask])
+            tab_risk = tab.predict_proba(X_selected)[:, 1]
+            print(f"  G4 TabPFN fitted")
+        except Exception as e:
+            print(f"  G4 TabPFN: skipped ({type(e).__name__}: {str(e)[:80]})")
+
         # Cross-validated stacking: learn optimal LR/GB weight via internal CV
         X_train_sel = X_selected[train_mask]
         y_train = y_meta[train_mask]
@@ -1018,17 +1082,38 @@ def run_ews():
         stack_model = LogisticRegression(C=10.0, max_iter=1000, random_state=42)
         stack_model.fit(stack_X, y_train, sample_weight=w_train)
         stack_coefs = stack_model.coef_[0]
-        # Convert to weights via softmax
+        # Convert to weights via softmax (LR vs GB original stacking)
         w_lr = np.exp(stack_coefs[0]) / (np.exp(stack_coefs[0]) + np.exp(stack_coefs[1]))
         w_gb = 1.0 - w_lr
-        # Clamp to avoid extreme weights
         w_lr = np.clip(w_lr, 0.2, 0.8)
         w_gb = 1.0 - w_lr
 
-        ews_df["calibrated_risk"] = w_lr * lr_risk + w_gb * gb_risk
+        # G3/G4/G6: extend stacking with optional base learners (CatBoost,
+        # TabPFN, RandomForest, ExtraTrees). Each added with diversity weight
+        # = 0.5 / (n_diverse) so the LR/GB core retains majority influence.
+        components = {"lr": (w_lr, lr_risk), "gb": (w_gb, gb_risk)}
+        diverse_risks = []
+        diverse_names = []
+        for name, r in [("rf", rf_risk), ("et", et_risk),
+                        ("cb", cb_risk), ("tab", tab_risk)]:
+            if r is not None:
+                diverse_risks.append(r)
+                diverse_names.append(name)
+        if diverse_risks:
+            # Reweight: shrink LR+GB to 0.7 total, distribute 0.3 among the
+            # diverse learners. Adjust LR/GB proportionally.
+            w_lr = w_lr * 0.7
+            w_gb = w_gb * 0.7
+            w_each = 0.3 / len(diverse_risks)
+            components = {"lr": (w_lr, lr_risk), "gb": (w_gb, gb_risk)}
+            for n, r in zip(diverse_names, diverse_risks):
+                components[n] = (w_each, r)
+        calibrated = sum(w * r for w, r in components.values())
+        ews_df["calibrated_risk"] = calibrated
 
-        print(f"\n  Stacked ensemble (cross-validated weights):")
-        print(f"    LR weight: {w_lr:.3f}, GB weight: {w_gb:.3f}")
+        print(f"\n  Stacked ensemble (cross-validated + diversity weights):")
+        for name, (w, _) in components.items():
+            print(f"    {name} weight: {w:.3f}")
         print(f"    LR component range: [{lr_risk[train_mask].min():.4f}, {lr_risk[train_mask].max():.4f}]")
         print(f"    GB component range: [{gb_risk[train_mask].min():.4f}, {gb_risk[train_mask].max():.4f}]")
 

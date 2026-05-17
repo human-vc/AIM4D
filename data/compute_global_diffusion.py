@@ -117,75 +117,96 @@ def main():
         alliance = alliance.dropna(subset=["iso_a", "iso_b"])
     print(f"  contig pairs: {len(contig)}; alliance pairs: {len(alliance)}")
 
+    # Pre-build edge dictionaries indexed by year for fast lookup.
+    # Contiguity edges accumulate (treat as persistent once a border exists),
+    # so we just take the cumulative set.
+    print("  pre-indexing contiguity + alliance edges per year...")
+    if not contig.empty:
+        contig_unique = (contig[["iso_a", "iso_b"]]
+                         .drop_duplicates()
+                         .itertuples(index=False, name=None))
+        contig_set = set((min(a, b), max(a, b)) for a, b in contig_unique)
+    else:
+        contig_set = set()
+
+    if not alliance.empty:
+        alliance_by_year = {}
+        for yr, grp in alliance.groupby("year"):
+            edges = set((min(a, b), max(a, b))
+                        for a, b in grp[["iso_a", "iso_b"]].itertuples(index=False, name=None))
+            alliance_by_year[int(yr)] = edges
+    else:
+        alliance_by_year = {}
+
     # For each year, build the graph, compute PageRank, then compute exposure.
     years = sorted(vdem["year"].unique())
     rows = []
+    poly_by_year = {y: g.set_index("country_text_id")["poly_change"].to_dict()
+                    for y, g in vdem.groupby("year")}
+    libdem_by_year = {y: g.set_index("country_text_id")["libdem_change"].to_dict()
+                      for y, g in vdem.groupby("year")}
+    countries_by_year = {y: sorted(g["country_text_id"].unique())
+                          for y, g in vdem.groupby("year")}
+
+    import time
+    t0 = time.time()
     for year in years:
         if year < 1970:
             continue
-        countries = sorted(vdem[vdem["year"] == year]["country_text_id"].unique())
+        countries = countries_by_year[year]
+        country_set = set(countries)
+
+        # Build edges: contiguity (static) + alliance within +/- 5 years
+        edges = set()
+        for a, b in contig_set:
+            if a in country_set and b in country_set:
+                edges.add((a, b))
+        for yr_offset in range(-5, 1):
+            ed = alliance_by_year.get(year + yr_offset)
+            if ed:
+                for a, b in ed:
+                    if a in country_set and b in country_set:
+                        edges.add((a, b))
+
         G = nx.Graph()
         G.add_nodes_from(countries)
-
-        # add contiguity edges for this year (or fall back to most recent <= year)
-        if not contig.empty:
-            sub = contig[contig["year"] <= year].sort_values("year").drop_duplicates(
-                subset=["iso_a", "iso_b"], keep="last"
-            )
-            for _, r in sub.iterrows():
-                if r["iso_a"] in countries and r["iso_b"] in countries:
-                    G.add_edge(r["iso_a"], r["iso_b"])
-        # add alliance edges within a 5-year window (matches Stage 4 convention)
-        if not alliance.empty:
-            sub = alliance[(alliance["year"] >= year - 5) & (alliance["year"] <= year)]
-            for _, r in sub.iterrows():
-                if r["iso_a"] in countries and r["iso_b"] in countries:
-                    G.add_edge(r["iso_a"], r["iso_b"])
-
-        if G.number_of_edges() == 0:
-            # fallback: complete graph weakly weighted (gives uniform PageRank)
-            pass
+        G.add_edges_from(edges)
 
         try:
             pr = nx.pagerank(G, alpha=0.85, max_iter=100, tol=1e-6)
         except Exception:
             pr = {c: 1.0 / max(len(countries), 1) for c in countries}
 
-        # lag-1 polyarchy and libdem change for each country in this year
-        prev = vdem[vdem["year"] == year - 1].set_index("country_text_id")
-        poly_lag = prev["poly_change"].to_dict() if not prev.empty else {}
-        libdem_lag = prev["libdem_change"].to_dict() if not prev.empty else {}
+        # lag-1 polyarchy and libdem change for each country
+        poly_lag = poly_by_year.get(year - 1, {})
+        libdem_lag = libdem_by_year.get(year - 1, {})
 
-        # Schmotz-Selvik style: sum_{j != i} PR_j * change_j  (year t-1 change)
-        for ego in countries:
+        # Vectorized exposure: sum_{j != ego} PR_j * (-change_j)
+        pr_arr = np.array([pr.get(c, 0.0) for c in countries])
+        poly_change_arr = np.array([poly_lag.get(c, 0.0) for c in countries])
+        libdem_change_arr = np.array([libdem_lag.get(c, 0.0) for c in countries])
+
+        total_exposure_poly = float(np.sum(pr_arr * (-poly_change_arr)))
+        total_exposure_libdem = float(np.sum(pr_arr * (-libdem_change_arr)))
+        n_backsliders_global = int(np.sum(poly_change_arr < -0.01))
+
+        for i, ego in enumerate(countries):
+            # Subtract self-contribution to get sum over j != ego
             ego_pr = pr.get(ego, 0.0)
-            exposure_poly = 0.0
-            exposure_libdem = 0.0
-            n_backsliders = 0
-            for j in countries:
-                if j == ego:
-                    continue
-                pj = pr.get(j, 0.0)
-                cp = poly_lag.get(j, np.nan)
-                cl = libdem_lag.get(j, np.nan)
-                if not np.isnan(cp):
-                    # negative change = backsliding; we want a positive exposure
-                    # to backsliders, so we use -change
-                    exposure_poly += pj * (-cp)
-                    if cp < -0.01:
-                        n_backsliders += 1
-                if not np.isnan(cl):
-                    exposure_libdem += pj * (-cl)
+            ep = total_exposure_poly - pr_arr[i] * (-poly_change_arr[i])
+            el = total_exposure_libdem - pr_arr[i] * (-libdem_change_arr[i])
+            n_bs = n_backsliders_global - (1 if poly_change_arr[i] < -0.01 else 0)
             rows.append({
                 "country_text_id": ego,
                 "year": year,
-                "global_exposure_polyarchy": exposure_poly,
-                "global_exposure_libdem": exposure_libdem,
+                "global_exposure_polyarchy": ep,
+                "global_exposure_libdem": el,
                 "pagerank": ego_pr,
-                "n_backsliding_neighbors": n_backsliders,
+                "n_backsliding_neighbors": n_bs,
             })
         if year % 10 == 0:
-            print(f"  year {year}: {len(countries)} countries, {G.number_of_edges()} edges")
+            print(f"  year {year}: {len(countries)} countries, {len(edges)} edges, "
+                  f"elapsed {time.time() - t0:.1f}s")
 
     out = pd.DataFrame(rows)
     out_path = os.path.join(DATA, "global_diffusion.csv")

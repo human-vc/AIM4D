@@ -59,13 +59,15 @@ def parse_stage5(log):
     out = {}
     for key, pat in PATTERNS.items():
         m = re.search(pat, log, re.MULTILINE)
-        if m:
-            if "/" in m.group(0):
-                a, b = m.group(1), m.group(2)
-                out[key] = f"{a}/{b}"
-                out[key + "_frac"] = float(a) / float(b) if float(b) else 0.0
-            else:
-                out[key] = float(m.group(1))
+        if not m:
+            continue
+        # Branch on the regex's group count, not on the matched text.
+        if m.lastindex and m.lastindex >= 2:
+            a, b = m.group(1), m.group(2)
+            out[key] = f"{a}/{b}"
+            out[key + "_frac"] = float(a) / float(b) if float(b) else 0.0
+        else:
+            out[key] = float(m.group(1))
     return out
 
 

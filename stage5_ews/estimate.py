@@ -758,25 +758,27 @@ def run_ews():
         time_weights = np.exp(-np.log(2) * (max_year - ews_df["year"].values) / half_life)
         # No proximity boost — soft labels captured via percentile features instead
 
-        # (3) Elastic net feature selection (L1+L2 to auto-prune noisy features)
-        # alpha=0.005 chosen by grid search on OOS AUC-PR (was 0.001).
-        from sklearn.linear_model import SGDClassifier
+        # (3) Feature selection: use all features. Earlier elastic-net selection
+        # (alpha=0.005) was costing ~0.07 OOS AUC vs all-features (per DSP
+        # ablation run on full panel). GB's built-in regularization handles
+        # noise; explicit pruning hurts here.
+        from sklearn.linear_model import SGDClassifier  # kept for compat with other imports
+        # Still fit enet for reporting (coefficients show what the linear model would prune)
         enet = SGDClassifier(
             loss="log_loss", penalty="elasticnet", l1_ratio=0.5,
             alpha=0.005, max_iter=2000, random_state=42, class_weight="balanced",
         )
         enet.fit(X_meta_scaled[train_mask], y_meta[train_mask],
                  sample_weight=time_weights[train_mask])
-        selected_mask = np.abs(enet.coef_[0]) > 1e-4
-        selected_features = [f for f, s in zip(all_meta, selected_mask) if s]
-        n_selected = selected_mask.sum()
-        print(f"  Elastic net selected {n_selected}/{len(all_meta)} features:")
-        for feat, coef in sorted(zip(all_meta, enet.coef_[0]), key=lambda x: -abs(x[1])):
-            if abs(coef) > 1e-4:
-                print(f"    {feat}: {coef:+.4f}")
+        # Reporting-only: which features WOULD have been selected
+        report_mask = np.abs(enet.coef_[0]) > 1e-4
+        n_selected = report_mask.sum()
+        selected_mask = np.ones_like(report_mask, dtype=bool)  # USE ALL features
+        selected_features = list(all_meta)
+        print(f"  Using all {len(all_meta)} features (elastic-net would have pruned to "
+              f"{n_selected}; pruning hurts OOS AUC by ~0.07).")
 
-        # Use selected features for final models
-        X_selected = X_meta_scaled[:, selected_mask] if n_selected >= 3 else X_meta_scaled
+        X_selected = X_meta_scaled
 
         # (4) Stacked ensemble with cross-validated weights
         # Reduces CV variance vs fixed 50/50 (Wolpert 1992, Breiman 1996)

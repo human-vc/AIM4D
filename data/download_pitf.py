@@ -28,11 +28,23 @@ INDICATORS = {
 
 def fetch_one(code, name, years):
     df = wb.data.DataFrame(code, time=years, labels=False)
-    # df has economy index and YRxxxx columns; melt to long
+    # wbgapi version variance: index name may be 'economy', 'Country', or missing.
+    # Year columns may be 'YR2020' (string) or 2020 (int).
     df = df.reset_index()
-    df = df.melt(id_vars=["economy"], var_name="yr", value_name=name)
-    df["year"] = df["yr"].str.replace("YR", "", regex=False).astype(int)
-    df = df.rename(columns={"economy": "iso3"})
+    # First column = country identifier; rename to iso3
+    first = df.columns[0]
+    df = df.rename(columns={first: "iso3"})
+    # Identify year columns (anything that isn't the iso3 col)
+    year_cols = [c for c in df.columns if c != "iso3"]
+    df = df.melt(id_vars=["iso3"], value_vars=year_cols, var_name="yr", value_name=name)
+
+    def _to_year(v):
+        s = str(v)
+        return int(s.replace("YR", "")) if s.replace("YR", "").isdigit() else None
+
+    df["year"] = df["yr"].apply(_to_year)
+    df = df.dropna(subset=["year"])
+    df["year"] = df["year"].astype(int)
     return df[["iso3", "year", name]]
 
 

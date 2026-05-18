@@ -944,7 +944,25 @@ def run_ews():
     pctile_features = [f"{f}_pctile" for f in ["csd_index", "mv_csd_index", "election_vulnerability"]
                        if f"{f}_pctile" in ews_df.columns]
 
-    all_meta = available_base + lag_features + pctile_features + era_features + detrended_features + interaction_features
+    # Lagged expanding-pctile: year T uses the expanding-pctile from year T-3.
+    # Strictly causal (lag is past-only) AND restores the "country history is
+    # unusual" signal that helps coup precursors (1-3 year horizon). Coup
+    # detection LOEO regressed when we removed the leaky non-lagged version,
+    # so adding this honest lagged variant.
+    lagged_pctile_features = []
+    for feat in ["csd_index", "mv_csd_index", "election_vulnerability"]:
+        if f"{feat}_pctile" in ews_df.columns:
+            new_col = f"{feat}_pctile_lag3"
+            ews_df[new_col] = (
+                ews_df.groupby("country_text_id")[f"{feat}_pctile"].shift(3)
+            )
+            # Fill pre-lag rows with the country's own first observed pctile (sentinel 0.5)
+            ews_df[new_col] = ews_df[new_col].fillna(0.5)
+            lagged_pctile_features.append(new_col)
+
+    all_meta = (available_base + lag_features + pctile_features
+                + lagged_pctile_features + era_features + detrended_features
+                + interaction_features)
     all_meta = [f for f in all_meta if f in ews_df.columns]
 
     # (2b) Soft distance-weighted labels (exponential decay from onset)
@@ -1363,10 +1381,21 @@ def run_ews():
                 train_preds = w_lr * loeo_lr.predict_proba(X_scaled[loeo_train])[:, 1] + \
                               w_gb * loeo_gb.predict_proba(X_scaled[loeo_train])[:, 1]
 
-                # Evaluate at all three tiers
-                thresh_alert = np.percentile(train_preds, 98)
-                thresh_warning = np.percentile(train_preds, 95)
-                thresh_watch = np.percentile(train_preds, 80)
+                # Calibrate tier thresholds against the NEGATIVE-class training
+                # distribution only — i.e., the false-positive distribution.
+                # Using all train rows (including positives) pushes thresholds up
+                # because positives have high risk, defeating the held-out
+                # episode which has no within-country training signal.
+                train_y = y_loeo[loeo_train]
+                neg_preds = train_preds[train_y == 0]
+                if len(neg_preds) >= 50:
+                    thresh_alert = np.percentile(neg_preds, 98)
+                    thresh_warning = np.percentile(neg_preds, 95)
+                    thresh_watch = np.percentile(neg_preds, 80)
+                else:
+                    thresh_alert = np.percentile(train_preds, 98)
+                    thresh_warning = np.percentile(train_preds, 95)
+                    thresh_watch = np.percentile(train_preds, 80)
 
                 if max_risk > thresh_alert:
                     tier = "alert"

@@ -27,13 +27,28 @@ import numpy as np
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.dirname(os.path.abspath(__file__))
 
-# Five sample episodes spanning era + type. Adjust as needed.
+# 15 stratified sample episodes: 5 coups + 10 backsliding, spread across
+# eras (pre-2010, 2010-2017, post-2017) so the full-pipeline LOEO bound is
+# tight across the panel.
 SAMPLE_EPISODES = [
+    # Pre-2010 era
+    ("Venezuela", 2002, "backsliding"),
+    ("Bangladesh", 2007, "backsliding"),
+    ("Fiji", 2006, "coup"),
+    ("Niger", 2009, "coup"),
+    # 2010-2017 era
     ("Hungary", 2010, "backsliding"),
     ("Türkiye", 2013, "backsliding"),
+    ("Poland", 2015, "backsliding"),
+    ("Thailand", 2014, "coup"),
+    ("Egypt", 2013, "coup"),
+    # Post-2017 era
+    ("Tunisia", 2021, "backsliding"),
+    ("Nigeria", 2021, "backsliding"),
+    ("Brazil", 2019, "backsliding"),
     ("Burma/Myanmar", 2021, "coup"),
     ("Mali", 2020, "coup"),
-    ("Nigeria", 2021, "backsliding"),
+    ("Sudan", 2021, "coup"),
 ]
 LEAD = 5
 

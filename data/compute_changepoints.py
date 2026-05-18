@@ -1,8 +1,12 @@
 """
-G9: Change-point features via PELT (Pruned Exact Linear Time).
+G9: Change-point features via PELT (Pruned Exact Linear Time) — PROSPECTIVE.
 
-For each country, run PELT on the V-Dem polyarchy + libdem time series and
-record "years since last break" and "break-in-last-3-years" per country-year.
+For each country-year (c, T), we run PELT on the TRAILING 30-year window
+[T-29, T] only. That makes every feature value at year T derived strictly
+from data available by year T — no future leakage. (The previous version ran
+PELT once globally over 1789-2025, so years_since_break at year T could
+reflect breakpoint positions PELT chose using post-T data.)
+
 Output: data/changepoints.csv with columns
   country_text_id, year, years_since_break_poly, years_since_break_libdem,
   break_in_last_3yr_poly, break_in_last_3yr_libdem
@@ -19,10 +23,11 @@ except ImportError:
 
 DATA = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(DATA, "changepoints.csv")
+WINDOW = 30  # trailing years used per (country, year) PELT fit
 
 
-def detect_breaks(series, penalty=1.0, model="l2", min_size=4):
-    """Return sorted list of break-year indices for a 1-D series."""
+def detect_breaks_in_window(series, penalty=0.05, model="l2", min_size=4):
+    """Return sorted list of break-year indices (within-window) for a 1-D series."""
     x = np.asarray(series, dtype=float)
     if len(x) < min_size * 2:
         return []
@@ -30,24 +35,37 @@ def detect_breaks(series, penalty=1.0, model="l2", min_size=4):
         algo = rpt.Pelt(model=model, min_size=min_size, jump=1).fit(x)
         bkps = algo.predict(pen=penalty)
         # bkps includes the endpoint; trim it
-        return [b for b in bkps if b < len(x)]
+        return [b for b in bkps if 0 < b < len(x)]
     except Exception:
         return []
 
 
-def per_country_features(years, breaks):
-    """For each year, compute years-since-last-break and 3yr-window flag."""
-    yss = np.zeros(len(years), dtype=int)
-    win3 = np.zeros(len(years), dtype=int)
-    last_break_year = -9999
-    break_years = set(int(years[b]) for b in breaks)
-    for i, y in enumerate(years):
-        y = int(y)
-        if y in break_years:
-            last_break_year = y
-        yss[i] = (y - last_break_year) if last_break_year > -9999 else 99
-        # any break in last 3 years (incl. current)?
-        win3[i] = 1 if any(by for by in break_years if y - 2 <= by <= y) else 0
+def years_since_last_break_prospective(series, years, window=WINDOW,
+                                        penalty=0.05, min_size=4):
+    """
+    For each index t, run PELT on series[max(0, t-window+1) : t+1].
+    Return (years_since_last_break, break_in_last_3_years) arrays of length n.
+    """
+    n = len(series)
+    yss = np.full(n, 99, dtype=int)
+    win3 = np.zeros(n, dtype=int)
+    for t in range(n):
+        start = max(0, t - window + 1)
+        chunk = series[start:t + 1]
+        chunk_years = years[start:t + 1]
+        # need enough non-nan points for PELT to fit
+        valid = ~np.isnan(chunk)
+        if valid.sum() < min_size * 2:
+            continue
+        bkps = detect_breaks_in_window(chunk[valid], penalty=penalty, min_size=min_size)
+        valid_years = chunk_years[valid]
+        # Translate breakpoint indices (in valid-subset) back to actual years
+        break_years = [int(valid_years[b]) for b in bkps if b < len(valid_years)]
+        if break_years:
+            last_break = max(break_years)  # most recent within window
+            yss[t] = int(years[t]) - last_break
+            if 0 <= int(years[t]) - last_break <= 2:
+                win3[t] = 1
     return yss, win3
 
 
@@ -60,36 +78,38 @@ def main():
     df = df.dropna(subset=["v2x_polyarchy"]).sort_values(["country_text_id", "year"])
 
     rows = []
-    for cid, grp in df.groupby("country_text_id"):
-        grp = grp.sort_values("year").reset_index(drop=True)
-        years = grp["year"].values
+    countries = df["country_text_id"].unique()
+    n_total = len(countries)
+    for i, cid in enumerate(countries, 1):
+        grp = df[df["country_text_id"] == cid].sort_values("year").reset_index(drop=True)
+        years = grp["year"].values.astype(int)
         if len(grp) < 8:
             continue
 
         poly = grp["v2x_polyarchy"].values
-        # ffill only — bfill would inject future libdem values into past rows.
+        # ffill only for libdem within country (no future leakage)
         libdem = grp["v2x_libdem"].ffill().fillna(0.0).values
 
-        bp = detect_breaks(poly, penalty=0.05, model="l2", min_size=4)
-        bl = detect_breaks(libdem, penalty=0.05, model="l2", min_size=4)
+        yss_p, w3_p = years_since_last_break_prospective(poly, years)
+        yss_l, w3_l = years_since_last_break_prospective(libdem, years)
 
-        yss_p, w3_p = per_country_features(years, bp)
-        yss_l, w3_l = per_country_features(years, bl)
-
-        for i, y in enumerate(years):
+        for t in range(len(years)):
             rows.append({
                 "country_text_id": cid,
-                "year": int(y),
-                "years_since_break_poly": int(yss_p[i]),
-                "years_since_break_libdem": int(yss_l[i]),
-                "break_in_last_3yr_poly": int(w3_p[i]),
-                "break_in_last_3yr_libdem": int(w3_l[i]),
+                "year": int(years[t]),
+                "years_since_break_poly": int(yss_p[t]),
+                "years_since_break_libdem": int(yss_l[t]),
+                "break_in_last_3yr_poly": int(w3_p[t]),
+                "break_in_last_3yr_libdem": int(w3_l[t]),
             })
+
+        if i % 20 == 0:
+            print(f"  {i}/{n_total} countries done")
 
     out = pd.DataFrame(rows)
     out.to_csv(OUT, index=False)
     print(f"Wrote {OUT}: {len(out)} rows, {out['country_text_id'].nunique()} countries, "
-          f"{out['year'].min()}-{out['year'].max()}")
+          f"{out['year'].min()}-{out['year'].max()} (prospective {WINDOW}-yr window)")
 
 
 if __name__ == "__main__":

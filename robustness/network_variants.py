@@ -192,7 +192,7 @@ def run_network_variants():
     countries_iso3 = sorted(complete[complete >= len(years_use) * 0.8].index.tolist())
     print(f"Countries: {len(countries_iso3)}, Years: {years_use[0]}-{years_use[-1]}")
 
-    contig_pairs, alliance_by_year = build_spatial_edges(mapping, countries_iso3)
+    contig_pairs, alliance_by_year, _cultural_pairs = build_spatial_edges(mapping, countries_iso3)
 
     edge_types = ["contiguity", "alliance", "trade", "full"]
     all_country_scores = {}

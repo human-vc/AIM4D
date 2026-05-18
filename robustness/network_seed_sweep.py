@@ -32,10 +32,11 @@ def main():
     )
     countries_iso3 = sorted(complete[complete >= len(years_use) * 0.8].index.tolist())
 
-    contig_pairs, alliance_by_year = build_spatial_edges(mapping, countries_iso3)
+    contig_pairs, alliance_by_year, cultural_pairs = build_spatial_edges(mapping, countries_iso3)
     (x, y, edge_index, _spatial_ei, _temporal_ei,
      mask_train, mask_test, *_) = build_spatiotemporal_graph(
         df, countries_iso3, years_use, contig_pairs, alliance_by_year, feature_cols,
+        cultural_pairs=cultural_pairs,
     )
     in_dim = x.shape[1]
 

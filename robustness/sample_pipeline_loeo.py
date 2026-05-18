@@ -108,6 +108,16 @@ def load_meta_only_loeo():
 
 
 def main():
+    # Quick dependency check — Stage 3 needs hmmlearn. Fail loudly upfront
+    # instead of after every episode crashes 60% through the pipeline.
+    try:
+        import hmmlearn  # noqa: F401
+    except ImportError:
+        sys.exit(
+            "ERROR: hmmlearn not installed (required by stage3_msvar). Install with:\n"
+            "  pip install --user hmmlearn\n"
+            "or:  pip install --user -r requirements.txt"
+        )
     meta_only = load_meta_only_loeo()
     rows = []
 
@@ -149,7 +159,8 @@ def main():
     print(f"Summary")
     print(f"{'=' * 70}")
     print(df.to_string(index=False))
-    valid = df[df["delta_risk"].notna()]
+    # Defensive: if every episode crashed, df has no "delta_risk" column
+    valid = df[df["delta_risk"].notna()] if "delta_risk" in df.columns else df.iloc[0:0]
     if len(valid):
         print(f"\nMean (full - meta) risk delta: {valid['delta_risk'].mean():+.4f}")
         print(f"Std:                           {valid['delta_risk'].std():.4f}")

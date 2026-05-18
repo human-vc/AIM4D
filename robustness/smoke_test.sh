@@ -91,11 +91,31 @@ else
     echo "Skipping gnn_counterfactual (fast mode)"
 fi
 
-# 8. Task F sample (heavy) — verify 1 episode runs without crash
+# 8. Task F sample (heavy) — verify 1 episode runs without crash.
+# IMPORTANT: this rewrites the upstream stage1/2/3/4 CSVs with
+# Venezuela-excluded + QUICK-mode versions. Restore canonical state after.
 run_one "sample_pipeline_loeo_smoke" \
     "AIM4D_SMOKE_LIMIT=1 python3 -u robustness/sample_pipeline_loeo.py" \
     1800 \
     ""
+
+# 9. Restore canonical pipeline state — must rerun stages 1-4 without
+# AIM4D_QUICK and without AIM4D_EXCLUDE_COUNTRY so downstream analyses
+# don't read contaminated CSVs.
+echo
+echo "=== Restoring canonical pipeline state after Task F smoke run ==="
+unset AIM4D_QUICK AIM4D_HMM_RESTARTS AIM4D_EXCLUDE_COUNTRY
+for stage in stage1_factors/extract.py stage2_betas/estimate.py \
+             stage3_msvar/estimate.py stage4_nscm/estimate.py \
+             stage5_ews/estimate.py; do
+    echo "  rerunning $stage ..."
+    if python3 -u "$stage" > "$LOG_DIR/restore_$(basename $stage .py).log" 2>&1; then
+        echo "    OK"
+    else
+        echo "    FAILED (see $LOG_DIR/restore_$(basename $stage .py).log)"
+        FAILED+=("restore_$(basename $stage .py)")
+    fi
+done
 
 echo
 echo "================================================================"

@@ -36,6 +36,7 @@ sys.path.insert(0, REPO)
 from stage4_nscm.estimate import (  # noqa: E402
     load_all_data, build_spatial_edges, build_spatiotemporal_graph,
     train_model, INETARNet, STATE_COLS, TREATMENT_DIM,
+    FACTOR_COLS, BETA_COLS,
 )
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gnn_counterfactual.csv")
@@ -62,9 +63,8 @@ CF_YEARS = [2017, 2019, 2021, 2023, 2025]
 def main():
     print("Loading Stage 4 data...")
     df, mapping = load_all_data()
-    feature_cols = ["polyarchy_treat", "libdem_treat", "egal_treat", "part_treat",
-                    "v2x_corr", "v2x_freexp_altinf", "v2caautmob_lag1",
-                    "v2cademmob_lag1", "gdp_pc", "urbanization"]
+    # Match Stage 4's feature_cols (see stage4_nscm/estimate.py:460)
+    feature_cols = FACTOR_COLS + BETA_COLS + ["gdp_pc", "urbanization"]
 
     # Match Stage 4's year filter: 1990 onward, only years with data for all features
     years_all = sorted(df["year"].unique())

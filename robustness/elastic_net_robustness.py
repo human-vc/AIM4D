@@ -44,10 +44,11 @@ def parse_metrics(log):
     m = re.search(r"AUC-PR \(OOS\):\s+([\d.]+)", log)
     if m:
         out["oos_auc_pr"] = float(m.group(1))
-    m = re.search(r"AUC-ROC:\s+([\d.]+)", log)
+    # Anchor in-sample AUC to the "Base rate" line in the Continuous-risk block
+    m = re.search(r"Base rate.*?AUC-ROC:\s+([\d.]+)", log, re.DOTALL)
     if m:
         out["in_sample_auc"] = float(m.group(1))
-    m = re.search(r"AUC-PR:\s+([\d.]+)", log)
+    m = re.search(r"Base rate.*?AUC-PR:\s+([\d.]+)", log, re.DOTALL)
     if m:
         out["in_sample_auc_pr"] = float(m.group(1))
     for tier, label in [("Watch \\(P80\\)", "loeo_watch"),

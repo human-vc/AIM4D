@@ -39,11 +39,12 @@ def parse_metrics(log):
     if m: out["oos_auc"] = float(m.group(1))
     m = re.search(r"AUC-PR \(OOS\):\s+([\d.]+)", log)
     if m: out["oos_auc_pr"] = float(m.group(1))
-    # In-sample AUC: pick the second match (first is per-window AUC list)
-    matches = re.findall(r"AUC-ROC:\s+([\d.]+)", log)
-    if matches: out["in_sample_auc"] = float(matches[-1])
-    matches = re.findall(r"AUC-PR:\s+([\d.]+)", log)
-    if matches: out["in_sample_auc_pr"] = float(matches[-1])
+    # In-sample AUC: the AUC line that follows the "Base rate" line in the
+    # Continuous-risk-evaluation block. Anchored to avoid OOS / Stage4 noise.
+    m = re.search(r"Base rate.*?AUC-ROC:\s+([\d.]+)", log, re.DOTALL)
+    if m: out["in_sample_auc"] = float(m.group(1))
+    m = re.search(r"Base rate.*?AUC-PR:\s+([\d.]+)", log, re.DOTALL)
+    if m: out["in_sample_auc_pr"] = float(m.group(1))
     for tier, label in [(r"Watch \(P80\)", "loeo_watch"),
                         (r"Warning \(P95\)", "loeo_warning"),
                         (r"Alert \(P98\)", "loeo_alert")]:

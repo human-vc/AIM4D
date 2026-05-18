@@ -50,6 +50,13 @@ SAMPLE_EPISODES = [
     ("Mali", 2020, "coup"),
     ("Sudan", 2021, "coup"),
 ]
+
+# AIM4D_SMOKE_LIMIT trims the SAMPLE_EPISODES list for smoke-testing
+_smoke_limit = int(os.environ.get("AIM4D_SMOKE_LIMIT", "0"))
+if _smoke_limit > 0:
+    SAMPLE_EPISODES = SAMPLE_EPISODES[:_smoke_limit]
+    print(f"[SMOKE] limited to {len(SAMPLE_EPISODES)} episodes")
+
 LEAD = 5
 
 

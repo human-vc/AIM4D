@@ -15,7 +15,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 FACTOR_COLS = ["factor_1", "factor_2", "factor_3", "factor_4"]
 N_STATES = 5
-N_RESTARTS = 60
+# AIM4D_HMM_RESTARTS overrides default 60; AIM4D_QUICK=1 drops to 10 for smoke-test
+N_RESTARTS = int(os.environ.get("AIM4D_HMM_RESTARTS",
+                                 "10" if os.environ.get("AIM4D_QUICK") == "1" else "60"))
 DIRICHLET_DIAG = 50
 DIRICHLET_OFF = 2
 MAX_TRAIN_YEAR = int(os.environ.get("AIM4D_CUTOFF", "2019"))

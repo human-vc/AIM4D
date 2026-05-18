@@ -1069,21 +1069,27 @@ def run_ews():
                     sample_weight=train_weights[train_mask])
         lr_risk = meta_lr.predict_proba(X_selected)[:, 1]
 
-        # Model B: Gradient boosting ensemble (20 random seeds, averaged) — reduces
-        # OOS variance and stabilises AUC-PR.
-        N_SEEDS = 20
-        gb_risks = []
-        meta_gb = None
-        for seed in range(N_SEEDS):
+        # Model B: Gradient boosting ensemble (random-seed bag, averaged) —
+        # reduces OOS variance and stabilises AUC-PR.
+        # Parallelized via joblib for ~Ncore speedup on multi-core boxes.
+        # AIM4D_QUICK=1 drops to 5 seeds for fast smoke-testing.
+        from joblib import Parallel, delayed
+        N_SEEDS = 5 if os.environ.get("AIM4D_QUICK") == "1" else 20
+
+        def _fit_gb(seed):
             gb = GradientBoostingClassifier(
                 n_estimators=100, max_depth=3, learning_rate=0.05,
                 subsample=0.8, min_samples_leaf=20, random_state=seed,
             )
             gb.fit(X_selected[train_mask], y_meta[train_mask],
                    sample_weight=train_weights[train_mask])
-            gb_risks.append(gb.predict_proba(X_selected)[:, 1])
-            if seed == 0:
-                meta_gb = gb  # keep first for feature_importances_
+            return gb
+
+        gb_models = Parallel(n_jobs=-1, backend="loky")(
+            delayed(_fit_gb)(s) for s in range(N_SEEDS)
+        )
+        gb_risks = [m.predict_proba(X_selected)[:, 1] for m in gb_models]
+        meta_gb = gb_models[0]  # keep first for feature_importances_
         gb_risk = np.mean(gb_risks, axis=0)
 
         # G3: CatBoost as third base learner. Better small-N regularization

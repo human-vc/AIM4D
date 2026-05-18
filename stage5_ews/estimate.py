@@ -8,14 +8,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 WINDOW = 8
 MIN_WINDOW = 5
-BASELINE_END = 2005
+BASELINE_END = int(os.environ.get("AIM4D_BASELINE_END", "2005"))
 TRAIN_CUTOFF = int(os.environ.get("AIM4D_CUTOFF", "2019"))
 EXCLUDE_COUNTRY = os.environ.get("AIM4D_EXCLUDE_COUNTRY", "").strip() or None
 Z_THRESHOLD = 1.5
 Z_CAP = 10.0
 MIN_ABS_VAR_PCTL = 0.30
 PERSISTENCE = 2
-LEAD_YEARS = 5
+LEAD_YEARS = int(os.environ.get("AIM4D_LEAD_YEARS", "5"))
 N_SURROGATES = 50  # Reduced for speed; 200 for final paper runs
 KENDALL_SIG = 0.05
 
@@ -23,10 +23,16 @@ KENDALL_SIG = 0.05
 # Set AIM4D_COUP_LEAD to a number (e.g. 3) to use shorter pre-onset window for coups.
 # Set AIM4D_POS_WEIGHT to a float >1 (e.g. 3.0) to upweight positive labels.
 # Set AIM4D_SMOOTH to a number >=2 (e.g. 3) for rolling-max risk smoothing.
+# Set AIM4D_BASELINE_END / AIM4D_LEAD_YEARS / AIM4D_POSTONSET / AIM4D_WATCH_PCTL
+#   / AIM4D_WARNING_PCTL / AIM4D_ALERT_PCTL for hyperparameter sensitivity.
 COUP_LEAD_OVERRIDE = os.environ.get("AIM4D_COUP_LEAD", "").strip()
 LEAD_YEARS_COUP = int(COUP_LEAD_OVERRIDE) if COUP_LEAD_OVERRIDE else LEAD_YEARS
 POS_WEIGHT = float(os.environ.get("AIM4D_POS_WEIGHT", "1.0"))
 SMOOTH_WINDOW = int(os.environ.get("AIM4D_SMOOTH", "1"))
+POSTONSET_EXCL_YEARS_ENV = int(os.environ.get("AIM4D_POSTONSET", "5"))
+WATCH_PCTL = float(os.environ.get("AIM4D_WATCH_PCTL", "0.80"))
+WARNING_PCTL = float(os.environ.get("AIM4D_WARNING_PCTL", "0.95"))
+ALERT_PCTL = float(os.environ.get("AIM4D_ALERT_PCTL", "0.98"))
 
 
 def lead_for(info):
@@ -804,7 +810,7 @@ def run_ews():
 
     known_w = {}
     postonset_w = {}
-    POSTONSET_EXCL_YEARS = 5  # exclude 5 post-onset years from train + eval
+    POSTONSET_EXCL_YEARS = POSTONSET_EXCL_YEARS_ENV  # env-toggleable for sensitivity
     for c, info in KNOWN_EPISODES.items():
         onset = info["onset"]
         lead = lead_for(info)
@@ -840,12 +846,33 @@ def run_ews():
             dsp_data = pd.read_csv(vdem_path, low_memory=False,
                                    usecols=["country_text_id", "year"] + vdem_extra_available)
             ews_df = ews_df.merge(dsp_data, on=["country_text_id", "year"], how="left")
-            # DSP coverage begins in year 2000 (Mechkova et al. DSP-WP1).
-            # Pre-2000 country-years are structurally missing, not MCAR.
+            # DSP imputation strategy is env-toggleable for robustness checks:
+            #   ffill_2000 (default): restrict to year>=2000 (Mechkova et al.
+            #     DSP-WP1: DSP coverage begins 2000; pre-2000 is structurally
+            #     missing, not MCAR), then country-level forward-fill within.
+            #   median_full: keep all years, fill missing DSP with TRAIN-PERIOD
+            #     country-level median (no future leakage, no row drops).
+            dsp_strategy = os.environ.get("AIM4D_DSP_STRATEGY", "ffill_2000")
             n_before = len(ews_df)
-            ews_df = ews_df[ews_df["year"] >= 2000].reset_index(drop=True)
-            for c in dsp_available:
-                ews_df[c] = ews_df.groupby("country_text_id")[c].ffill()
+            if dsp_strategy == "median_full":
+                for c in dsp_available:
+                    # Use train-period median per country to avoid future leakage
+                    train_slice = ews_df[ews_df["year"] <= TRAIN_CUTOFF]
+                    med_by_country = train_slice.groupby("country_text_id")[c].median()
+                    global_med = train_slice[c].median()
+                    ews_df[c] = ews_df.groupby("country_text_id")[c].ffill()
+                    ews_df[c] = ews_df.apply(
+                        lambda r: med_by_country.get(r["country_text_id"], global_med)
+                        if pd.isna(r[c]) else r[c], axis=1
+                    )
+                print(f"  DSP imputation: AIM4D_DSP_STRATEGY=median_full "
+                      f"(train-period country median, all years kept, n={len(ews_df)})")
+            else:
+                ews_df = ews_df[ews_df["year"] >= 2000].reset_index(drop=True)
+                for c in dsp_available:
+                    ews_df[c] = ews_df.groupby("country_text_id")[c].ffill()
+                print(f"  Restricted to year >= 2000 (DSP coverage window): "
+                      f"{n_before} -> {len(ews_df)} country-years")
             # Mobilization + legitimation: country-level forward-fill ONLY for
             # any tiny gaps. Backward-fill removed (was using future values to
             # fill past gaps — temporal leakage). Remaining NaN dropped from
@@ -856,8 +883,6 @@ def run_ews():
             print(f"  DSP variables loaded: {dsp_available}")
             print(f"  F2 mobilization features: {mob_available}")
             print(f"  F2 legitimation features: {legit_available}")
-            print(f"  Restricted to year >= 2000 (DSP coverage window): "
-                  f"{n_before} -> {len(ews_df)} country-years")
         else:
             dsp_available = []
     except Exception:
@@ -1019,12 +1044,19 @@ def run_ews():
         # Reporting-only: which features WOULD have been selected
         report_mask = np.abs(enet.coef_[0]) > 1e-4
         n_selected = report_mask.sum()
-        selected_mask = np.ones_like(report_mask, dtype=bool)  # USE ALL features
-        selected_features = list(all_meta)
-        print(f"  Using all {len(all_meta)} features (elastic-net would have pruned to "
-              f"{n_selected}; pruning hurts OOS AUC by ~0.07).")
+        # Default uses all features (pruning costs ~0.07 OOS AUC at last test).
+        # Set AIM4D_USE_ENET=1 to enable elastic-net pruning as a robustness check.
+        if os.environ.get("AIM4D_USE_ENET") == "1":
+            selected_mask = report_mask
+            selected_features = [f for f, s in zip(all_meta, selected_mask) if s]
+            print(f"  AIM4D_USE_ENET=1: pruning to {n_selected}/{len(all_meta)} features via elastic-net.")
+        else:
+            selected_mask = np.ones_like(report_mask, dtype=bool)
+            selected_features = list(all_meta)
+            print(f"  Using all {len(all_meta)} features (elastic-net would have pruned to "
+                  f"{n_selected}; pruning hurts OOS AUC by ~0.07).")
 
-        X_selected = X_meta_scaled
+        X_selected = X_meta_scaled[:, selected_mask] if selected_mask.sum() >= 5 else X_meta_scaled
 
         # (4) Stacked ensemble with cross-validated weights
         # Reduces CV variance vs fixed 50/50 (Wolpert 1992, Breiman 1996)
@@ -1198,9 +1230,9 @@ def run_ews():
         # Tiered alerts based on (possibly smoothed) calibrated risk
         train_risks = ews_df.loc[train_mask, risk_for_tier]
         ews_df["alert_tier"] = "none"
-        ews_df.loc[ews_df[risk_for_tier] >= train_risks.quantile(0.80), "alert_tier"] = "watch"
-        ews_df.loc[ews_df[risk_for_tier] >= train_risks.quantile(0.95), "alert_tier"] = "warning"
-        ews_df.loc[ews_df[risk_for_tier] >= train_risks.quantile(0.98), "alert_tier"] = "alert"
+        ews_df.loc[ews_df[risk_for_tier] >= train_risks.quantile(WATCH_PCTL), "alert_tier"] = "watch"
+        ews_df.loc[ews_df[risk_for_tier] >= train_risks.quantile(WARNING_PCTL), "alert_tier"] = "warning"
+        ews_df.loc[ews_df[risk_for_tier] >= train_risks.quantile(ALERT_PCTL), "alert_tier"] = "alert"
 
         ews_df["combined_alert"] = ews_df["alert_tier"].isin(["warning", "alert"])
 

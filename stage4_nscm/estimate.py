@@ -35,11 +35,19 @@ def load_all_data():
     df = df.merge(states[["country_name", "year"] + STATE_COLS], on=["country_name", "year"])
     macro_cols = ["gdp_pc", "urbanization"]
     macro_sub = macro[["iso3", "year"] + macro_cols].copy()
+    # Use train-period median (year <= TRAIN_CUTOFF) — full-panel median
+    # would inject post-cutoff information into pre-cutoff imputed rows.
     for c in macro_cols:
-        macro_sub[c] = macro_sub[c].fillna(macro_sub[c].median())
+        train_med = macro_sub.loc[macro_sub["year"] <= TRAIN_CUTOFF, c].median()
+        if pd.isna(train_med):
+            train_med = 0.0
+        macro_sub[c] = macro_sub[c].fillna(train_med)
     df = df.merge(macro_sub, left_on=["country_text_id", "year"], right_on=["iso3", "year"], how="left")
     for c in macro_cols:
-        df[c] = df[c].fillna(df[c].median())
+        train_med = df.loc[df["year"] <= TRAIN_CUTOFF, c].median()
+        if pd.isna(train_med):
+            train_med = 0.0
+        df[c] = df[c].fillna(train_med)
     return df, mapping
 
 
@@ -553,7 +561,11 @@ def run_stage4(seed=42, write_outputs=True):
     scores_df = pd.DataFrame(rows)
     scores_df = scores_df.sort_values(["country_text_id", "year"])
     scores_df["contagion_smooth"] = scores_df.groupby("country_text_id")["contagion_score"].transform(
-        lambda s: s.rolling(3, min_periods=1, center=True).mean()
+        # Trailing (non-centred) 3-yr smoothing: only uses years t-2..t.
+        # Centred rolling was using year t+1 to smooth year t's contagion,
+        # which would leak future contagion into the smoothed feature if it
+        # were ever used as a model input.
+        lambda s: s.rolling(3, min_periods=1).mean()
     )
 
     output_dir = os.path.dirname(os.path.abspath(__file__))

@@ -67,7 +67,8 @@ def main():
             continue
 
         poly = grp["v2x_polyarchy"].values
-        libdem = grp["v2x_libdem"].fillna(method="ffill").fillna(method="bfill").values
+        # ffill only — bfill would inject future libdem values into past rows.
+        libdem = grp["v2x_libdem"].ffill().fillna(0.0).values
 
         bp = detect_breaks(poly, penalty=0.05, model="l2", min_size=4)
         bl = detect_breaks(libdem, penalty=0.05, model="l2", min_size=4)

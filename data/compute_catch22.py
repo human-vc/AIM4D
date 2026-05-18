@@ -64,7 +64,10 @@ def main():
             continue
 
         poly = grp["v2x_polyarchy"].values
-        libdem = grp["v2x_libdem"].ffill().bfill().values
+        # ffill only — bfill would use future libdem to fill past gaps.
+        # Pre-coverage NaN replaced with 0.0 sentinel (catch22 then sees a
+        # constant baseline, which it correctly summarises as low entropy).
+        libdem = grp["v2x_libdem"].ffill().fillna(0.0).values
 
         poly_feats = rolling_catch22(poly)
         libdem_feats = rolling_catch22(libdem)

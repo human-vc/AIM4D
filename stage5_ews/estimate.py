@@ -668,7 +668,11 @@ def run_ews():
         ews_df = ews_df.merge(pitf, on=["country_text_id", "year"], how="left")
         for f in pitf_features:
             ews_df[f] = ews_df.groupby("country_text_id")[f].ffill()
-            ews_df[f] = ews_df[f].fillna(ews_df[f].median())
+            # Use train-period median only (no post-cutoff leakage)
+            train_median = ews_df.loc[ews_df["year"] <= TRAIN_CUTOFF, f].median()
+            if pd.isna(train_median):
+                train_median = 0.0
+            ews_df[f] = ews_df[f].fillna(train_median)
         print(f"  F5 PITF features loaded: {pitf_features}")
     else:
         print(f"  F5 PITF: macro_pitf.csv not found; run data/download_pitf.py to enable")
@@ -701,7 +705,10 @@ def run_ews():
         ews_df = ews_df.merge(arch, on=["country_text_id", "year"], how="left")
         for f in archigos_features:
             ews_df[f] = ews_df.groupby("country_text_id")[f].ffill()
-            ews_df[f] = ews_df[f].fillna(ews_df[f].median())
+            train_median = ews_df.loc[ews_df["year"] <= TRAIN_CUTOFF, f].median()
+            if pd.isna(train_median):
+                train_median = 0.0
+            ews_df[f] = ews_df[f].fillna(train_median)
         print(f"  F3 Archigos features loaded: {archigos_features}")
     else:
         print(f"  F3 Archigos: archigos_features.csv not found; run data/download_archigos.py")
@@ -839,11 +846,13 @@ def run_ews():
             ews_df = ews_df[ews_df["year"] >= 2000].reset_index(drop=True)
             for c in dsp_available:
                 ews_df[c] = ews_df.groupby("country_text_id")[c].ffill()
-            # Mobilization + legitimation: country-level forward-fill within country
-            # for any tiny gaps. These vars have broader temporal coverage than DSP.
+            # Mobilization + legitimation: country-level forward-fill ONLY for
+            # any tiny gaps. Backward-fill removed (was using future values to
+            # fill past gaps — temporal leakage). Remaining NaN dropped from
+            # affected rows via per-feature fillna(0) sentinel.
             for c in mob_available + legit_available:
                 ews_df[c] = ews_df.groupby("country_text_id")[c].ffill()
-                ews_df[c] = ews_df.groupby("country_text_id")[c].bfill()
+                ews_df[c] = ews_df[c].fillna(0.0)
             print(f"  DSP variables loaded: {dsp_available}")
             print(f"  F2 mobilization features: {mob_available}")
             print(f"  F2 legitimation features: {legit_available}")
@@ -921,10 +930,17 @@ def run_ews():
         ews_df["csd_x_military"] = ews_df["csd_index"] * ews_df["mil_zscore"]
     interaction_features = [f for f in ["csd_x_election", "csd_x_military"] if f in ews_df.columns]
 
-    # (2) Country-percentile features: relative risk within each country's history
+    # (2) Country-percentile features: relative risk within each country's
+    # history. Uses EXPANDING rank — for year T the percentile is computed
+    # over years [country_start, T] only, never including T+1..end. Prevents
+    # future leakage that a plain groupby.rank(pct=True) would introduce.
+    ews_df = ews_df.sort_values(["country_text_id", "year"]).reset_index(drop=True)
     for feat in ["csd_index", "mv_csd_index", "election_vulnerability"]:
         if feat in ews_df.columns:
-            ews_df[f"{feat}_pctile"] = ews_df.groupby("country_text_id")[feat].rank(pct=True)
+            ews_df[f"{feat}_pctile"] = (
+                ews_df.groupby("country_text_id")[feat]
+                .transform(lambda s: s.expanding(min_periods=1).rank(pct=True))
+            )
     pctile_features = [f"{f}_pctile" for f in ["csd_index", "mv_csd_index", "election_vulnerability"]
                        if f"{f}_pctile" in ews_df.columns]
 

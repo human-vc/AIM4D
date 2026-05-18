@@ -988,7 +988,22 @@ def run_ews():
     all_meta = (available_base + lag_features + pctile_features
                 + lagged_pctile_features + era_features + detrended_features
                 + interaction_features)
+    # DIAGNOSTIC: feature counts by category (to debug feature-count regressions)
+    print(f"  [diag] available_base={len(available_base)}  lag={len(lag_features)}  "
+          f"pctile={len(pctile_features)}  lagged_pctile={len(lagged_pctile_features)}  "
+          f"era={len(era_features)}  detrended={len(detrended_features)}  "
+          f"interaction={len(interaction_features)}")
+    pre_filter_n = len(all_meta)
     all_meta = [f for f in all_meta if f in ews_df.columns]
+    post_filter_n = len(all_meta)
+    if post_filter_n < pre_filter_n:
+        missing = [f for f in (available_base + lag_features + pctile_features
+                   + lagged_pctile_features + era_features + detrended_features
+                   + interaction_features) if f not in ews_df.columns]
+        print(f"  [diag] DROPPED {pre_filter_n - post_filter_n} features missing from ews_df.columns:")
+        print(f"  [diag] missing sample: {missing[:20]}")
+    print(f"  [diag] available_base sample: {sorted(available_base)[:15]}")
+    print(f"  [diag] ews_df cols total: {len(ews_df.columns)}")
 
     # (2b) Soft distance-weighted labels (exponential decay from onset)
     # Years closer to onset get higher weight, captures proximity gradient

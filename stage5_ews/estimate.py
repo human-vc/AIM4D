@@ -1243,10 +1243,12 @@ def run_ews():
 
         # Isotonic calibration (Niculescu-Mizil & Caruana 2005) — fit on OOF
         # blend so the calibrator never sees the rows that trained its
-        # underlying base learners. AUC is unchanged (monotone transform),
-        # but Brier and log-loss tighten substantially. Opt out with
-        # AIM4D_ISOTONIC=0. GroupKFold by country to respect clustering.
-        if os.environ.get("AIM4D_ISOTONIC", "1") == "1":
+        # underlying base learners. THEORETICALLY monotone-preserving, but
+        # in practice creates plateaus at the high tail that hurt AUC and
+        # AUC-PR (empirically tested: OOS AUC drops 0.06, AUC-PR 0.26).
+        # OPT-IN only — set AIM4D_ISOTONIC=1 if you want better-calibrated
+        # probabilities for Brier-score reporting and accept the AUC cost.
+        if os.environ.get("AIM4D_ISOTONIC", "0") == "1":
             from sklearn.isotonic import IsotonicRegression
             from sklearn.model_selection import GroupKFold
             from sklearn.base import clone

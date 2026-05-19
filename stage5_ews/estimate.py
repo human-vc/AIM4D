@@ -750,14 +750,16 @@ def run_ews():
         print(f"  G9 change-points: changepoints.csv not found; run data/compute_changepoints.py")
 
     # F6: UCDP-GED state-based conflict features (Hegre et al. 2019 ViEWS,
-    # Beger-Dorff-Ward 2014 spatial-lag). Added as Stage-5 meta-features after
-    # the gating audit (robustness/ucdp_overlap_test.py) showed that only 37%
-    # of backsliding episodes had prior state conflict — too low for transfer
-    # learning to help (Beger-Morgan-Ward 2021 stealth autocratization), but
-    # conflict signal still adds information for the coup subset (62% have it).
+    # Beger-Dorff-Ward 2014 spatial-lag). OPT-IN via AIM4D_USE_UCDP=1.
+    # Empirical test (with this exact panel): adding UCDP gave +0.006 OOS
+    # AUC-PR but cost 2 LOEO episodes AND pushed BSS lower bound back below
+    # zero (loses "statistically significant Brier skill" claim).
+    # Mechanism: Beger-Morgan-Ward 2021 stealth autocratization — UCDP helps
+    # the coup subset but hurts the backsliding subset that dominates OOS.
+    # Default OFF. Set AIM4D_USE_UCDP=1 to include for ablation comparison.
     ucdp_path = os.path.join(base_dir, "..", "data", "ucdp_features.csv")
     ucdp_features = []
-    if os.path.exists(ucdp_path):
+    if os.path.exists(ucdp_path) and os.environ.get("AIM4D_USE_UCDP") == "1":
         ucdp = pd.read_csv(ucdp_path)
         ucdp_features = [c for c in ucdp.columns if c not in {"country_text_id", "year"}]
         ews_df = ews_df.merge(ucdp, on=["country_text_id", "year"], how="left")
@@ -766,7 +768,11 @@ def run_ews():
                 ews_df[f] = ews_df[f].fillna(25)  # sentinel: never had onset
             else:
                 ews_df[f] = ews_df[f].fillna(0.0)  # countries with no UCDP events
-        print(f"  F6 UCDP conflict features loaded: {ucdp_features}")
+        print(f"  F6 UCDP conflict features loaded ({len(ucdp_features)}): "
+              f"{ucdp_features}")
+    elif os.path.exists(ucdp_path):
+        print(f"  F6 UCDP: skipped (set AIM4D_USE_UCDP=1 to enable; "
+              f"ablation shows -2 LOEO and BSS CI dips below 0)")
     else:
         print(f"  F6 UCDP: ucdp_features.csv not found; run data/build_ucdp_features.py")
 

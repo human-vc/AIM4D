@@ -749,6 +749,27 @@ def run_ews():
     else:
         print(f"  G9 change-points: changepoints.csv not found; run data/compute_changepoints.py")
 
+    # F6: UCDP-GED state-based conflict features (Hegre et al. 2019 ViEWS,
+    # Beger-Dorff-Ward 2014 spatial-lag). Added as Stage-5 meta-features after
+    # the gating audit (robustness/ucdp_overlap_test.py) showed that only 37%
+    # of backsliding episodes had prior state conflict — too low for transfer
+    # learning to help (Beger-Morgan-Ward 2021 stealth autocratization), but
+    # conflict signal still adds information for the coup subset (62% have it).
+    ucdp_path = os.path.join(base_dir, "..", "data", "ucdp_features.csv")
+    ucdp_features = []
+    if os.path.exists(ucdp_path):
+        ucdp = pd.read_csv(ucdp_path)
+        ucdp_features = [c for c in ucdp.columns if c not in {"country_text_id", "year"}]
+        ews_df = ews_df.merge(ucdp, on=["country_text_id", "year"], how="left")
+        for f in ucdp_features:
+            if f == "ucdp_years_since_onset":
+                ews_df[f] = ews_df[f].fillna(25)  # sentinel: never had onset
+            else:
+                ews_df[f] = ews_df[f].fillna(0.0)  # countries with no UCDP events
+        print(f"  F6 UCDP conflict features loaded: {ucdp_features}")
+    else:
+        print(f"  F6 UCDP: ucdp_features.csv not found; run data/build_ucdp_features.py")
+
     # G5: Election-calendar features. Derived from V-Dem v2eltype_0..9
     # (election-type-occurred-this-year indicators). Strictly causal because
     # election schedules are public ex ante.
@@ -914,6 +935,7 @@ def run_ews():
                      + elec_calendar_features  # G5: years since/within election (NELDA-style, strict causal)
                      + cp_features  # G9: change-point years-since-break per V-Dem polyarchy / libdem
                      + c22_features  # G7: catch22 rolling-window time-series statistics
+                     + ucdp_features  # F6: UCDP state-based conflict (Hegre 2019 / Beger 2014)
                      + gdelt_features)
     available_base = [f for f in base_features if f in ews_df.columns]
 
@@ -1218,6 +1240,81 @@ def run_ews():
             for n, r in zip(diverse_names, diverse_risks):
                 components[n] = (w_each, r)
         calibrated = sum(w * r for w, r in components.values())
+
+        # Isotonic calibration (Niculescu-Mizil & Caruana 2005) — fit on OOF
+        # blend so the calibrator never sees the rows that trained its
+        # underlying base learners. AUC is unchanged (monotone transform),
+        # but Brier and log-loss tighten substantially. Opt out with
+        # AIM4D_ISOTONIC=0. GroupKFold by country to respect clustering.
+        if os.environ.get("AIM4D_ISOTONIC", "1") == "1":
+            from sklearn.isotonic import IsotonicRegression
+            from sklearn.model_selection import GroupKFold
+            from sklearn.base import clone
+
+            tr_idx = np.where(train_mask.values)[0]
+            X_tr = X_selected[tr_idx]
+            y_tr = y_meta[tr_idx]
+            w_tr = train_weights[tr_idx]
+            country_tr = ews_df.loc[train_mask, "country_text_id"].values
+
+            oof_lr_full = np.zeros(len(y_tr))
+            oof_gb_full = np.zeros(len(y_tr))
+            oof_rf_full = np.zeros(len(y_tr))
+            oof_et_full = np.zeros(len(y_tr))
+            oof_cb_full = np.zeros(len(y_tr))
+
+            gkf = GroupKFold(n_splits=min(5, len(np.unique(country_tr))))
+            for fold_tr, fold_va in gkf.split(X_tr, y_tr, groups=country_tr):
+                lr_f = LogisticRegressionCV(cv=3, scoring="average_precision",
+                                             max_iter=1000, random_state=42)
+                lr_f.fit(X_tr[fold_tr], y_tr[fold_tr], sample_weight=w_tr[fold_tr])
+                oof_lr_full[fold_va] = lr_f.predict_proba(X_tr[fold_va])[:, 1]
+
+                gb_f = GradientBoostingClassifier(
+                    n_estimators=100, max_depth=3, learning_rate=0.05,
+                    subsample=0.8, min_samples_leaf=20, random_state=0,
+                )
+                gb_f.fit(X_tr[fold_tr], y_tr[fold_tr], sample_weight=w_tr[fold_tr])
+                oof_gb_full[fold_va] = gb_f.predict_proba(X_tr[fold_va])[:, 1]
+
+                rf_f = clone(rf)
+                rf_f.fit(X_tr[fold_tr], y_tr[fold_tr], sample_weight=w_tr[fold_tr])
+                oof_rf_full[fold_va] = rf_f.predict_proba(X_tr[fold_va])[:, 1]
+
+                et_f = clone(et)
+                et_f.fit(X_tr[fold_tr], y_tr[fold_tr], sample_weight=w_tr[fold_tr])
+                oof_et_full[fold_va] = et_f.predict_proba(X_tr[fold_va])[:, 1]
+
+                if cb_risk is not None:
+                    try:
+                        from catboost import CatBoostClassifier
+                        cb_f = CatBoostClassifier(
+                            iterations=1500, depth=5, learning_rate=0.03, l2_leaf_reg=5,
+                            bootstrap_type="Bayesian", bagging_temperature=1.0,
+                            auto_class_weights="SqrtBalanced", random_seed=42,
+                            verbose=0, allow_writing_files=False,
+                        )
+                        cb_f.fit(X_tr[fold_tr], y_tr[fold_tr],
+                                 sample_weight=w_tr[fold_tr])
+                        oof_cb_full[fold_va] = cb_f.predict_proba(X_tr[fold_va])[:, 1]
+                    except Exception:
+                        oof_cb_full[fold_va] = oof_gb_full[fold_va]  # graceful fallback
+
+            # Blend OOF with same weights as the production ensemble
+            blend_oof = (components["lr"][0] * oof_lr_full
+                         + components["gb"][0] * oof_gb_full
+                         + components.get("rf", (0,))[0] * oof_rf_full
+                         + components.get("et", (0,))[0] * oof_et_full
+                         + (components.get("cb", (0,))[0] * oof_cb_full
+                            if "cb" in components else 0))
+
+            iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+            iso.fit(blend_oof, y_tr, sample_weight=w_tr)
+            calibrated = iso.predict(calibrated)
+            print(f"  Isotonic calibration fit (GroupKFold by country, "
+                  f"{gkf.n_splits} folds, "
+                  f"OOF blend range [{blend_oof.min():.3f}, {blend_oof.max():.3f}])")
+
         ews_df["calibrated_risk"] = calibrated
 
         print(f"\n  Stacked ensemble (cross-validated + diversity weights):")

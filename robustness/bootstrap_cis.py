@@ -15,7 +15,12 @@ warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import (
+    average_precision_score, roc_auc_score, brier_score_loss, log_loss,
+)
+
+
+EPS = 1e-15  # sklearn's default log_loss clip
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -102,6 +107,32 @@ def main():
     print(f"  AUC-PR  (in-sample, cluster boot):  {auc_pr:.3f}  95% CI [{lo:.3f}, {hi:.3f}]")
     rows.append({"metric": "auc_pr_in_sample", "point": auc_pr, "ci_low": lo, "ci_high": hi, "n": len(y)})
 
+    # Brier + log-loss + BSS (Gneiting-Raftery 2007 proper scoring rules).
+    # BSS = 1 - Brier/Brier_climatology — the honest headline at 5% base rate
+    # because raw Brier ~0.045 looks tiny while climatology already scores ~0.0475.
+    def _brier(yy, ss, ww=None):
+        return brier_score_loss(yy, np.clip(ss, EPS, 1 - EPS), sample_weight=ww)
+    def _logloss(yy, ss, ww=None):
+        return log_loss(yy, np.clip(ss, EPS, 1 - EPS),
+                        sample_weight=ww, labels=[0, 1])
+    def _bss(yy, ss, ww=None):
+        # Recompute climatology reference per bootstrap replicate (anti-conservative bug fix)
+        p_clim = np.average(yy, weights=ww) if ww is not None else float(yy.mean())
+        ref = np.average((yy - p_clim) ** 2, weights=ww) if ww is not None else float(((yy - p_clim) ** 2).mean())
+        return 1.0 - _brier(yy, ss, ww) / max(ref, EPS)
+
+    brier_pt, lo, hi = bootstrap_auc(y, s, _brier, clusters=clusters)
+    print(f"  Brier   (in-sample, cluster boot):  {brier_pt:.4f}  95% CI [{lo:.4f}, {hi:.4f}]")
+    rows.append({"metric": "brier_in_sample", "point": brier_pt, "ci_low": lo, "ci_high": hi, "n": len(y)})
+
+    ll_pt, lo, hi = bootstrap_auc(y, s, _logloss, clusters=clusters)
+    print(f"  LogLoss (in-sample, cluster boot):  {ll_pt:.4f}  95% CI [{lo:.4f}, {hi:.4f}]")
+    rows.append({"metric": "logloss_in_sample", "point": ll_pt, "ci_low": lo, "ci_high": hi, "n": len(y)})
+
+    bss_pt, lo, hi = bootstrap_auc(y, s, _bss, clusters=clusters)
+    print(f"  BSS     (in-sample, cluster boot):  {bss_pt:.4f}  95% CI [{lo:.4f}, {hi:.4f}]")
+    rows.append({"metric": "bss_in_sample", "point": bss_pt, "ci_low": lo, "ci_high": hi, "n": len(y)})
+
     cutoff = 2019
     oos = valid[valid["year"] > cutoff]
     if len(oos) > 0 and oos["label"].sum() > 1:
@@ -122,6 +153,15 @@ def main():
         )
         print(f"  AUC-PR  (OOS year>{cutoff}, cluster): {auc_pr:.3f}  95% CI [{lo:.3f}, {hi:.3f}]  n={len(oos)}")
         rows.append({"metric": f"auc_pr_oos_{cutoff}", "point": auc_pr, "ci_low": lo, "ci_high": hi, "n": len(oos)})
+
+        # OOS Brier + log-loss + BSS
+        y_oos = oos["label"].astype(int).values
+        s_oos = oos["combined_risk"].values
+        c_oos = oos["country_name"].values
+        for fn_name, fn in [("brier", _brier), ("logloss", _logloss), ("bss", _bss)]:
+            pt, lo_, hi_ = bootstrap_auc(y_oos, s_oos, fn, clusters=c_oos)
+            print(f"  {fn_name:8s} (OOS year>{cutoff}, cluster): {pt:.4f}  95% CI [{lo_:.4f}, {hi_:.4f}]  n={len(oos)}")
+            rows.append({"metric": f"{fn_name}_oos_{cutoff}", "point": pt, "ci_low": lo_, "ci_high": hi_, "n": len(oos)})
 
     try:
         from stage5_ews.estimate import KNOWN_EPISODES, LEAD_YEARS
